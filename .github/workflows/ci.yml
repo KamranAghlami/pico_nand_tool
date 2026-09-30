@@ -19,6 +19,7 @@ jobs:
   firmware:
     name: Firmware build (RP2040)
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -28,10 +29,14 @@ jobs:
       - name: Firmware host tests + opcode safety gate
         run: make -C firmware/tests check
 
+      # Bounded: a stalled package mirror once hung this step for 12+ minutes. Retries + per-request timeout,
+      # and the step itself gives up after 8 minutes.
       - name: Install ARM toolchain
+        timeout-minutes: 8
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $APT_OPTS update
+          sudo apt-get $APT_OPTS install -y --no-install-recommends \
             gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
             cmake ninja-build build-essential pkg-config libusb-1.0-0-dev
           arm-none-eabi-gcc --version | head -1
@@ -73,6 +78,7 @@ jobs:
   host:
     name: Host tool tests (latest Python)
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
