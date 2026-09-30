@@ -7,7 +7,8 @@ import sys
 from collections.abc import Callable
 
 from . import __version__
-from .client import Client, DeviceError, ProtocolMismatch, TransportError
+from .client import Client
+from .errors import NandToolError
 from .protocol import PROTO_VERSION, TimingMode
 from .transport import Transport, open_transport
 
@@ -54,18 +55,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, transport_factory: Callable[[str | None], Transport] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    transport = None
     try:
         transport = (transport_factory or open_transport)(args.port)
-    except Exception as e:  # port missing / permission denied / several candidates
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    try:
         return args.func(Client(transport, timeout=args.timeout), args)
-    except (DeviceError, TransportError, ProtocolMismatch) as e:
+    except NandToolError as e:  # port, transport, framing, device-status and version errors
         print(f"error: {e}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 130
     finally:
-        transport.close()
+        if transport is not None:
+            transport.close()
 
 
 if __name__ == "__main__":

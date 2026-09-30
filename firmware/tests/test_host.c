@@ -5,6 +5,7 @@
 
 #include "crc32.h"
 #include "frame.h"
+#include "nand_cmd.h"
 #include "timing.h"
 
 static int failures;
@@ -161,7 +162,23 @@ static void test_timing(void) {
     CHECK(memcmp(w, w2, sizeof w) == 0 && u.rb_timeout_us == 0x01020304u && u.t_ceh == 8);
 }
 
+static void test_opcode_allow_list(void) {
+    /* Runtime layer of the gate: exactly the six SPEC opcodes, and they match the enum. */
+    const unsigned allowed[] = {NAND_CMD_READ_1, NAND_CMD_READ_2, NAND_CMD_READ_STATUS,
+                                NAND_CMD_READ_ID, NAND_CMD_READ_PARAM, NAND_CMD_RESET};
+    const unsigned want[] = {0x00, 0x30, 0x70, 0x90, 0xEC, 0xFF};
+    unsigned n = 0;
+    for (unsigned op = 0; op < 256; op++)
+        n += nand_cmd_is_allowed(op) ? 1 : 0;
+    CHECK(n == 6);
+    for (unsigned i = 0; i < 6; i++)
+        CHECK(allowed[i] == want[i] && nand_cmd_is_allowed(want[i]));
+    CHECK(!nand_cmd_is_allowed(0x80) && !nand_cmd_is_allowed(0x10) && !nand_cmd_is_allowed(0x60) &&
+          !nand_cmd_is_allowed(0xD0) && !nand_cmd_is_allowed(0x85) && !nand_cmd_is_allowed(0x100));
+}
+
 int main(void) {
+    test_opcode_allow_list();
     test_crc32();
     test_frame_roundtrip();
     test_frame_bad_crc();

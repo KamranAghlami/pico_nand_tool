@@ -16,8 +16,11 @@ themselves. Never scaffold, stub or "prepare" write paths in advance.
 ## Hard safety rules (never relax these, not even behind a flag)
 
 - The firmware may only ever issue these opcodes: `FFh` Reset, `90h` Read ID, `ECh` Read Parameter Page,
-  `00h`/`30h` Page Read, `70h` Read Status. The gate is the `nand_cmd_t` enum plus the `NAND_CMD()` `_Static_assert`
-  macro, with a runtime allow-list that `panic()`s *before* touching the bus.
+  `00h`/`30h` Page Read, `70h` Read Status. The gate is the `NAND_CMD()` `_Static_assert` macro in
+  `firmware/src/nand_cmd.h`, plus a runtime allow-list in `nand_bus_cmd_latch_()` that `panic()`s *before*
+  touching the bus. Never call `nand_bus_cmd_latch_` directly: `make -C firmware/tests check`
+  (`check_gate_calls.sh`) fails the build if any file other than `nand_cmd.h`, and its definition in `nand_bus.c`,
+  names it.
   Never write code for `80h 10h 85h 60h D0h` or any other opcode, and never add a data-input (WE# with CLE=ALE=0)
   path.
 - WP# is hard-wired to GND. There is no GPIO for it and there must never be one.

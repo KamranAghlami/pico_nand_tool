@@ -12,6 +12,8 @@ from dataclasses import astuple, dataclass, fields
 from enum import IntEnum
 from math import ceil
 
+from .errors import FrameError
+
 PROTO_VERSION = 1
 
 MAGIC_REQ = 0xA5
@@ -65,6 +67,25 @@ TIMING_SLOW_CYCLES = 125
 TIMING_RB_TIMEOUT_US = 1000
 TIMING_RB_TIMEOUT_MAX_US = 100000
 
+# SET_TIMING floors: datasheet Table 20 (ns), checked against sums of timing_t phases (docs/PROTOCOL.md)
+FLOOR_TCS_NS = 20
+FLOOR_TCR_NS = 10
+FLOOR_TSETUP_NS = 10
+FLOOR_TWP_NS = 12
+FLOOR_THOLD_NS = 5
+FLOOR_TWH_NS = 10
+FLOOR_TWC_NS = 25
+FLOOR_TWHR_NS = 60
+FLOOR_TREA_NS = 20
+FLOOR_TREH_NS = 10
+FLOOR_TRC_NS = 25
+FLOOR_TRHW_NS = 100
+FLOOR_TWB_NS = 100
+FLOOR_TRR_NS = 20
+FLOOR_TCHZ_NS = 30
+FLOOR_INPUT_SYNC_CYCLES = 2
+FLOOR_RB_TIMEOUT_US = 25
+
 _RESP_HDR = struct.Struct("<BBBBIH")
 _TIMING = struct.Struct("<11HI")
 assert _TIMING.size == TIMING_WIRE_LEN
@@ -87,10 +108,6 @@ def encode_response(cmd: int, seq: int, status: int, page: int = PAGE_NONE, payl
         raise ValueError("payload too long")
     body = _RESP_HDR.pack(MAGIC_RESP, cmd, seq, status, page, len(payload)) + payload
     return body + struct.pack("<I", crc32(body))
-
-
-class FrameError(Exception):
-    """Received bytes do not form a valid response frame (bad magic, length or CRC)."""
 
 
 @dataclass(frozen=True)
@@ -137,8 +154,6 @@ def _cycles(ns: int, clk_hz: int) -> int:
     return ceil(ns * clk_hz / 1_000_000_000)
 
 
-INPUT_SYNC_CYCLES = 2
-
 
 @dataclass
 class Timing:
@@ -167,6 +182,8 @@ class Timing:
 
     @classmethod
     def unpack(cls, data: bytes) -> Timing:
+        if len(data) != TIMING_WIRE_LEN:
+            raise FrameError(f"timing_t is {len(data)} bytes, expected {TIMING_WIRE_LEN}")
         return cls(*_TIMING.unpack(data))
 
     def pack(self) -> bytes:
@@ -177,22 +194,22 @@ class Timing:
         c = lambda ns: _cycles(ns, clk_hz)  # noqa: E731
         t = self
         return (
-            t.t_cs + t.t_setup + t.t_wp >= c(20)
-            and t.t_cs >= c(10)
-            and t.t_setup + t.t_wp >= c(10)
-            and t.t_wp >= c(12)
-            and t.t_wh >= c(5)
-            and t.t_wh + t.t_setup >= c(10)
-            and t.t_setup + t.t_wp + t.t_wh >= c(25)
-            and t.t_whr >= c(60)
-            and t.t_rea >= c(20) + INPUT_SYNC_CYCLES
-            and t.t_reh >= c(10)
-            and t.t_rea + t.t_reh >= c(25)
-            and t.t_rhw >= c(100)
-            and t.t_wb >= c(100)
-            and t.t_rr >= c(20)
-            and t.t_ceh >= c(30)
-            and 25 <= t.rb_timeout_us <= TIMING_RB_TIMEOUT_MAX_US
+            t.t_cs + t.t_setup + t.t_wp >= c(FLOOR_TCS_NS)
+            and t.t_cs >= c(FLOOR_TCR_NS)
+            and t.t_setup + t.t_wp >= c(FLOOR_TSETUP_NS)
+            and t.t_wp >= c(FLOOR_TWP_NS)
+            and t.t_wh >= c(FLOOR_THOLD_NS)
+            and t.t_wh + t.t_setup >= c(FLOOR_TWH_NS)
+            and t.t_setup + t.t_wp + t.t_wh >= c(FLOOR_TWC_NS)
+            and t.t_whr >= c(FLOOR_TWHR_NS)
+            and t.t_rea >= c(FLOOR_TREA_NS) + FLOOR_INPUT_SYNC_CYCLES
+            and t.t_reh >= c(FLOOR_TREH_NS)
+            and t.t_rea + t.t_reh >= c(FLOOR_TRC_NS)
+            and t.t_rhw >= c(FLOOR_TRHW_NS)
+            and t.t_wb >= c(FLOOR_TWB_NS)
+            and t.t_rr >= c(FLOOR_TRR_NS)
+            and t.t_ceh >= c(FLOOR_TCHZ_NS)
+            and FLOOR_RB_TIMEOUT_US <= t.rb_timeout_us <= TIMING_RB_TIMEOUT_MAX_US
         )
 
     def describe(self, clk_hz: int) -> str:
@@ -218,4 +235,6 @@ class PingInfo:
         if len(payload) < 8:
             raise FrameError("PING payload too short")
         proto, major, minor, patch, clk = struct.unpack("<BBBBI", payload[:8])
+        if clk == 0:
+            raise FrameError("PING reports clk_sys = 0")
         return cls(proto, (major, minor, patch), clk, payload[8:].decode("ascii", errors="replace"))

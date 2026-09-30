@@ -1,6 +1,7 @@
 from fake_device import FakeDevice, Fault
 
 from nand_tool.cli import main
+from nand_tool.errors import TransportError
 
 
 def run(dev: FakeDevice, *argv: str) -> int:
@@ -35,7 +36,18 @@ def test_transport_failure_is_an_error_exit(capsys):
 
 def test_port_open_failure(capsys):
     def boom(port):
-        raise RuntimeError("no Pico NAND Tool found")
+        raise TransportError("no Pico NAND Tool found")
 
     assert main(["ping"], transport_factory=boom) == 1
     assert "no Pico NAND Tool found" in capsys.readouterr().err
+
+
+def test_unplug_mid_command_is_a_clean_error(capsys):
+    class Unplugged(FakeDevice):
+        def read(self, n):
+            raise TransportError("/dev/ttyACM0: read failed (device unplugged or rebooted?)")
+
+    dev = Unplugged()
+    assert run(dev, "ping") == 1
+    assert "unplugged" in capsys.readouterr().err
+    assert dev.closed

@@ -1,13 +1,12 @@
-/* Firmware version. FW_VERSION_* and FW_GIT_DESC come from CMake (firmware/CMakeLists.txt). */
+/* Firmware version. FW_VERSION_* come from firmware/CMakeLists.txt; FW_GIT_DESC from the build-time generated
+ * git_desc.h (firmware/cmake/git_desc.cmake). */
 #ifndef VERSION_H
 #define VERSION_H
 
 #ifndef FW_VERSION_MAJOR
 #error "FW_VERSION_* must be defined by the build"
 #endif
-#ifndef FW_GIT_DESC
-#define FW_GIT_DESC "unknown"
-#endif
+#include "git_desc.h"
 
 #define FW_STR_(x) #x
 #define FW_STR(x) FW_STR_(x)

@@ -14,6 +14,7 @@ static frame_parser_t parser;
 static uint32_t last_rx_ms;
 static timing_t timing;
 static uint8_t timing_mode;
+static volatile uint32_t session; /* bumped on every DTR change (tud_cdc_line_state_cb) */
 
 void protocol_init(void) {
     frame_parser_reset(&parser);
@@ -26,10 +27,11 @@ const timing_t *protocol_timing(void) { return &timing; }
 /* ---- output ---------------------------------------------------------------------------------------------- */
 
 /* Write everything, running tud_task() while the TX FIFO is full: the device never drops bytes and never overruns
- * (PROTOCOL "Transport"). Gives up only if the host goes away (DTR drops), so it can't block forever. */
-static bool usb_write_all(const uint8_t *p, uint32_t n) {
+ * (PROTOCOL "Transport"). Gives up if the host goes away or reconnects (DTR change), so it can't block forever and
+ * never finishes an old session's frame into a new session. */
+static bool usb_write_all(const uint8_t *p, uint32_t n, uint32_t my_session) {
     while (n) {
-        if (!tud_cdc_connected())
+        if (!tud_cdc_connected() || session != my_session)
             return false;
         uint32_t avail = tud_cdc_write_available();
         if (avail == 0) {
@@ -53,7 +55,8 @@ static bool send_resp(uint8_t cmd, uint8_t seq, uint8_t status, uint32_t page, c
     c = crc32_update(c, payload, len);
     put_le32(tail, crc32_final(c));
 
-    bool ok = usb_write_all(hdr, sizeof hdr) && usb_write_all(payload, len) && usb_write_all(tail, sizeof tail);
+    uint32_t s = session; /* one session for the whole frame */
+    bool ok = usb_write_all(hdr, sizeof hdr, s) && usb_write_all(payload, len, s) && usb_write_all(tail, sizeof tail, s);
     tud_cdc_write_flush();
     return ok;
 }
@@ -135,15 +138,16 @@ static void dispatch(const proto_req_t *r) {
 
 /* ---- input ----------------------------------------------------------------------------------------------- */
 
+static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
+
 void protocol_poll(void) {
-    uint32_t now = to_ms_since_boot(get_absolute_time());
-    if (!frame_parser_idle(&parser) && now - last_rx_ms > PROTO_REQ_TIMEOUT_MS)
+    if (!frame_parser_idle(&parser) && now_ms() - last_rx_ms > PROTO_REQ_TIMEOUT_MS)
         frame_parser_reset(&parser); /* stale partial request */
 
     while (tud_cdc_available()) {
         uint8_t buf[64];
         uint32_t n = tud_cdc_read(buf, sizeof buf);
-        last_rx_ms = now;
+        last_rx_ms = now_ms(); /* fresh: a dispatch above may have blocked on USB for a while */
         for (uint32_t i = 0; i < n; i++) {
             proto_req_t req;
             switch (frame_parser_feed(&parser, buf[i], &req)) {
@@ -158,6 +162,21 @@ void protocol_poll(void) {
             }
         }
     }
+}
+
+/* DTR changed: the host opened or closed the port. Whatever is left from the previous session is stale: a partly
+ * sent response in the TX FIFO (TinyUSB only clears it on bus reset), unread request bytes, a partial request. */
+void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts) {
+    (void)itf;
+    (void)rts;
+    static bool last_dtr;
+    if (dtr == last_dtr)
+        return; /* RTS-only change */
+    last_dtr = dtr;
+    session++; /* makes an in-progress usb_write_all() give up instead of finishing an old frame */
+    tud_cdc_write_clear();
+    tud_cdc_read_flush();
+    frame_parser_reset(&parser);
 }
 
 /* Pico SDK convention: setting 1200 baud reboots into BOOTSEL (handy for reflashing; pyserial never uses it). */

@@ -1,6 +1,8 @@
 #include "nand_bus.h"
 
 #include "hardware/gpio.h"
+#include "nand_cmd.h"
+#include "pico/platform/panic.h"
 #include "pins.h"
 
 void nand_bus_init(void) {
@@ -21,4 +23,13 @@ void nand_bus_init(void) {
 
     /* IO stays an input with the default pull-downs (defined level while the chip is deselected);
      * R/B# stays an input on its external pull-up. */
+}
+
+void nand_bus_cmd_latch_(nand_cmd_t op) {
+    /* Layer 2 of the opcode gate (nand_cmd.h): checked before anything touches the bus. */
+    if (!nand_cmd_is_allowed((unsigned)op))
+        panic("forbidden NAND opcode 0x%02x", (unsigned)op);
+
+    /* The command latch cycle (Fig. 12) arrives with milestone M2. Until then nothing may reach the bus. */
+    panic("NAND command latch not implemented before M2");
 }

@@ -10,8 +10,11 @@ metadata:
 - 2026-09-30: The repo was renamed `pico_nand_dumper` → `pico_nand_tool` (GitHub KamranAghlami/pico_nand_tool),
   because "we might add writing or other capabilities later". SPEC.md is still read-only and the hard safety
   constraints are unchanged. The local checkout directory may still be called `pico_nand_dumper`.
-- 2026-09-30: M0 code is written. Firmware: USB CDC + PING/SET_TIMING/ABORT, with NAND lines parked idle. Host:
-  ping/timing, fake device, and tests. The build and all tests pass. **Waiting for the user's hardware output for M0**
+- 2026-09-30: The user chose to KEEP the PROTOCOL.md stream semantics (immediate ERR_BUSY between page frames;
+  ABORT gets its own OK after the end frame). Recorded in PROPOSAL §6 item 7.
+- 2026-09-30: M0 code is written. Code-review fixes (15 findings, incl. opcode-gate hardening) were applied the same
+  day. Firmware: USB CDC + PING/SET_TIMING/ABORT, with NAND lines parked idle. Host: ping/timing, fake device, and
+  tests. The build and all tests pass. **Waiting for the user's hardware output for M0**
   (enumeration + `nandtool ping`). M0 has NOT been confirmed on hardware.
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.

@@ -15,15 +15,14 @@ set(FW_VERSION_MAJOR 0)
 set(FW_VERSION_MINOR 1)
 set(FW_VERSION_PATCH 0)
 
-execute_process(
-    COMMAND git describe --always --dirty --abbrev=7
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    OUTPUT_VARIABLE FW_GIT_DESC
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET)
-if(NOT FW_GIT_DESC)
-    set(FW_GIT_DESC "unknown")
-endif()
+# git description for the PING version string, regenerated on every build (not just at configure time).
+set(GIT_DESC_H ${CMAKE_CURRENT_BINARY_DIR}/generated/git_desc.h)
+add_custom_target(git_desc ALL
+    COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${GIT_DESC_H}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/git_desc.cmake
+    BYPRODUCTS ${GIT_DESC_H}
+    COMMENT "Updating git description"
+    VERBATIM)
 
 add_executable(pico_nand_tool
     src/main.c
@@ -35,13 +34,13 @@ add_executable(pico_nand_tool
     src/usb_descriptors.c
 )
 
-target_include_directories(pico_nand_tool PRIVATE src)
+target_include_directories(pico_nand_tool PRIVATE src ${CMAKE_CURRENT_BINARY_DIR}/generated)
+add_dependencies(pico_nand_tool git_desc)
 
 target_compile_definitions(pico_nand_tool PRIVATE
     FW_VERSION_MAJOR=${FW_VERSION_MAJOR}
     FW_VERSION_MINOR=${FW_VERSION_MINOR}
     FW_VERSION_PATCH=${FW_VERSION_PATCH}
-    FW_GIT_DESC="${FW_GIT_DESC}"
 )
 
 target_compile_options(pico_nand_tool PRIVATE -Wall -Wextra)

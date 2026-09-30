@@ -11,6 +11,11 @@ the two agree.
 - Line coding (baud etc.) is ignored. The device aborts a running stream when DTR drops (host closed the port).
 - Setting the line coding to **1200 baud** reboots the Pico into BOOTSEL for reflashing (Pico SDK convention;
   the host tool never uses 1200 baud).
+- **DTR change** (host opens or closes the port): the device discards the previous session's leftovers, i.e. any
+  queued response bytes, unread request bytes and a partial request. A response write in progress is abandoned.
+- Host auto-detect: VID:PID plus product string. If the OS doesn't report the product string (Windows), the host
+  never guesses, because stock Pico SDK USB-serial firmware has the same VID:PID. The user passes `--port`. The host
+  opens the port exclusively (POSIX) and discards input on open. Its first `seq` is random.
 - Flow control: the device only writes what fits in the TinyUSB TX FIFO. If the host stops reading, the device waits.
   It never drops data.
 
@@ -95,6 +100,9 @@ Every request gets exactly one response frame, except `READ_PAGES`, which gets `
 On any frame error (bad magic, bad CRC, `len` out of range, unexpected `seq`, `page` out of order), the host sends
 `ABORT`. It then discards input until it has seen the end frame for the stream's seq, or 250 ms of silence. After
 that it re-issues `READ_PAGES` from the first page it did not accept. It never splices bytes across a framing error.
+The same rule applies to single-response commands: `ABORT`, drain, retry. The drain is bounded (3 s by default). A
+line that never goes quiet is a hard error ("not a Pico NAND Tool?"), not an endless wait. Every read also honours
+the per-request deadline while bytes keep arriving, so foreign or stale frames can't stall a request.
 
 ## `timing_t` (26 bytes)
 
@@ -116,8 +124,9 @@ Each delay is a minimum. See `PROPOSAL.md` §4.2 for the datasheet derivation.
 | 10 | `t_ceh` | 8 | 125 |
 | — | `rb_timeout_us` (u32) | 1000 | 1000 |
 
-**Floors**, checked on `SET_TIMING` mode 3 (ns → cycles, rounded up; 125 MHz shown). Every Table 20 constraint is
-checked against the sum of the phases that make it up:
+**Floors**, checked on `SET_TIMING` mode 3 (ns → cycles, rounded up). Every Table 20 constraint is checked against
+the sum of the phases that make it up. The ns values are the `PROTO_FLOOR_*` constants, which firmware and host
+share:
 
 | Constraint (Table 20) | Checked sum | Floor |
 |---|---|---|

@@ -22,25 +22,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Until firmware/ exists (pending design review) this job only reports and exits green.
-      - name: Detect firmware sources
-        id: detect
-        run: |
-          if [ -f firmware/CMakeLists.txt ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::firmware/CMakeLists.txt not present yet - skipping firmware build"
-          fi
-
-      # Host-compiled checks, no SDK needed: unit tests of the pure modules (crc32, frame, timing) and the
-      # hard safety gate. The allowed opcodes must compile; NAND_CMD(0x80) and non-constant opcodes must not.
+      # Always runs: the safety gate must never be skippable. Host-compiled, no SDK needed: unit tests of the pure
+      # modules (crc32, frame, timing) and the opcode gate. Allowed opcodes must compile; NAND_CMD(0x80),
+      # non-constant opcodes and direct calls to the latch must be rejected.
       - name: Firmware host tests + opcode safety gate
-        if: steps.detect.outputs.present == 'true'
         run: make -C firmware/tests check
 
       - name: Install ARM toolchain
-        if: steps.detect.outputs.present == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -49,7 +37,6 @@ jobs:
           arm-none-eabi-gcc --version | head -1
 
       - name: Cache Pico SDK
-        if: steps.detect.outputs.present == 'true'
         id: sdk-cache
         uses: actions/cache@v6
         with:
@@ -57,27 +44,23 @@ jobs:
           key: pico-sdk-${{ env.PICO_SDK_VERSION }}-tinyusb
 
       - name: Fetch Pico SDK ${{ env.PICO_SDK_VERSION }}
-        if: steps.detect.outputs.present == 'true' && steps.sdk-cache.outputs.cache-hit != 'true'
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch "$PICO_SDK_VERSION" https://github.com/raspberrypi/pico-sdk.git pico-sdk
           git -C pico-sdk submodule update --init --depth 1 lib/tinyusb
 
       - name: Configure
-        if: steps.detect.outputs.present == 'true'
         run: cmake -S firmware -B build -G Ninja -DPICO_SDK_PATH="$GITHUB_WORKSPACE/pico-sdk" -DPICO_BOARD=pico -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        if: steps.detect.outputs.present == 'true'
         run: cmake --build build --parallel
 
       - name: Check a .uf2 was produced
-        if: steps.detect.outputs.present == 'true'
         run: |
           ls -l build/*.uf2
           test -n "$(ls build/*.uf2 2>/dev/null)"
 
       - name: Upload firmware
-        if: steps.detect.outputs.present == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: pico-nand-tool-uf2
@@ -97,28 +80,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Detect host package
-        id: detect
-        run: |
-          if [ -f host/pyproject.toml ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::host/pyproject.toml not present yet - skipping host tests"
-          fi
-
       - uses: actions/setup-python@v7
-        if: steps.detect.outputs.present == 'true'
         with:
           python-version: ${{ matrix.python }}
 
       - name: Install (venv)
-        if: steps.detect.outputs.present == 'true'
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -e 'host[test]'
 
       - name: pytest
-        if: steps.detect.outputs.present == 'true'
         run: .venv/bin/pytest host/tests -q

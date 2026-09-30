@@ -342,6 +342,12 @@ not needed for the 300 KB/s target.
 5. BUS_TEST diagnostic readback payload: **included**. The blanket approval covered the proposal with this
    extension listed. It is additive and can be dropped on request.
 6. VID:PID `2E8A:000A`: **approved**.
+7. Requests during a READ_PAGES stream: **the `docs/PROTOCOL.md` version was approved** (2026-09-30, after the code
+   review found that it differed from §3.5 above). Any non-ABORT request is answered immediately with `ERR_BUSY`,
+   interleaved between page frames. `ABORT` ends the stream (end frame `ERR_ABORTED`), then gets its own `OK`.
+   This supersedes the §3.5 wording ("ERR_BUSY after the end frame").
+8. Auto-detect (§3.1) matches VID:PID plus product string only, not the serial number, which is unique per board.
+   If the OS doesn't report the product string (Windows), the host refuses to guess and asks for `--port`.
 
 Later change: the repo was renamed `pico_nand_dumper` → `pico_nand_tool` because other capabilities may be added
 later. The SPEC's read-only constraints are unchanged.

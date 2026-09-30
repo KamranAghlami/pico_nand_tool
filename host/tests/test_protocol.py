@@ -51,6 +51,8 @@ def test_timing_wire_format():
     assert len(t.pack()) == P.TIMING_WIRE_LEN == 26
     assert t.pack()[:2] == b"\x06\x00" and t.pack()[-4:] == struct.pack("<I", 1000)
     assert Timing.unpack(t.pack()) == t
+    with pytest.raises(FrameError):
+        Timing.unpack(t.pack()[:-1])
 
 
 def test_timing_presets_and_floors():
@@ -79,6 +81,7 @@ def test_ping_info_unpack():
 
 def _c_defines() -> dict[str, str]:
     text = PROTOCOL_DEFS_H.read_text()
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)  # drop C comments
     return dict(re.findall(r"^#define\s+(PROTO_\w+)\s+(.+?)\s*$", text, flags=re.M))
 
 
@@ -104,7 +107,7 @@ def _py_value(c_name: str):
 
 def test_constants_match_firmware_header():
     defines = _c_defines()
-    assert len(defines) > 30
+    assert len(defines) > 45
     for c_name, raw in defines.items():
         assert _py_value(c_name) == _c_value(raw), c_name
     # and nothing on the Python side is missing from C

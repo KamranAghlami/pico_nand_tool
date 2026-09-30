@@ -58,4 +58,24 @@
 #define PROTO_TIMING_RB_TIMEOUT_US 1000
 #define PROTO_TIMING_RB_TIMEOUT_MAX_US 100000
 
+/* SET_TIMING floors (docs/PROTOCOL.md floors table): datasheet Table 20 values in ns, checked against sums of
+ * timing_t phases. Also used by host/nand_tool/protocol.py Timing.meets_floors(). */
+#define PROTO_FLOOR_TCS_NS 20      /* t_cs + t_setup + t_wp        */
+#define PROTO_FLOOR_TCR_NS 10      /* t_cs                         */
+#define PROTO_FLOOR_TSETUP_NS 10   /* t_setup + t_wp: tCLS/tALS/tDS */
+#define PROTO_FLOOR_TWP_NS 12      /* t_wp                         */
+#define PROTO_FLOOR_THOLD_NS 5     /* t_wh: tCLH/tALH/tDH/tCH       */
+#define PROTO_FLOOR_TWH_NS 10      /* t_wh + t_setup               */
+#define PROTO_FLOOR_TWC_NS 25      /* t_setup + t_wp + t_wh        */
+#define PROTO_FLOOR_TWHR_NS 60     /* t_whr                        */
+#define PROTO_FLOOR_TREA_NS 20     /* t_rea, plus input sync       */
+#define PROTO_FLOOR_TREH_NS 10     /* t_reh                        */
+#define PROTO_FLOOR_TRC_NS 25      /* t_rea + t_reh                */
+#define PROTO_FLOOR_TRHW_NS 100    /* t_rhw                        */
+#define PROTO_FLOOR_TWB_NS 100     /* t_wb                         */
+#define PROTO_FLOOR_TRR_NS 20      /* t_rr                         */
+#define PROTO_FLOOR_TCHZ_NS 30     /* t_ceh                        */
+#define PROTO_FLOOR_INPUT_SYNC_CYCLES 2  /* RP2040 GPIO input synchronizer, added to the t_rea floor */
+#define PROTO_FLOOR_RB_TIMEOUT_US 25     /* tR                     */
+
 #endif

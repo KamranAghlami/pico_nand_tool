@@ -4,7 +4,8 @@ Mirrors the firmware as of milestone M0: PING, SET_TIMING and ABORT are implemen
 answers ERR_UNKNOWN_CMD, exactly like the real M0 firmware. It grows with the firmware, milestone by milestone
 (the NAND image, bitflips and READ_PAGES streaming come at M2-M5).
 
-Transport faults can be injected per request with inject(); each queued fault applies to the next request received.
+Transport faults can be injected with inject(). Each queued fault applies to the next non-ABORT request received
+(ABORTs are the client's own recovery traffic, docs/PROTOCOL.md "Host recovery rule").
 """
 
 from __future__ import annotations
@@ -106,7 +107,7 @@ class FakeDevice:
         cmd, seq, arg_len = frame[1], frame[2], frame[3]
         body = frame[: REQ_HDR_LEN + arg_len]
         (crc,) = struct.unpack("<I", frame[-CRC_LEN:])
-        fault = self._faults.pop(0) if self._faults else None
+        fault = self._faults.pop(0) if self._faults and cmd != Cmd.ABORT else None
 
         if fault is Fault.CORRUPT_REQUEST or crc32(body) != crc:
             self._tx += encode_response(cmd, seq, Status.ERR_CRC)

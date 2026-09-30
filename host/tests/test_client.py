@@ -1,8 +1,12 @@
+import struct
+import time
+
 import pytest
 from fake_device import FakeDevice, Fault
 
 from nand_tool.client import Client, DeviceError, ProtocolMismatch, TransportError
-from nand_tool.protocol import Cmd, Status, Timing, TimingMode
+from nand_tool.errors import FrameError
+from nand_tool.protocol import Cmd, Status, Timing, TimingMode, encode_response
 
 
 def test_ping(client, dev):
@@ -66,8 +70,12 @@ def test_recovers_from_single_transport_fault(client, dev, fault):
     assert client.ping().fw_version == (0, 1, 0)
     # every fault except STALE_FRAME (skipped by seq matching) costs exactly one retry
     expected_attempts = 1 if fault is Fault.STALE_FRAME else 2
-    sent = len(dev.requests) + (1 if fault is Fault.CORRUPT_REQUEST else 0)
+    pings = [r for r in dev.requests if r[0] == Cmd.PING]
+    sent = len(pings) + (1 if fault is Fault.CORRUPT_REQUEST else 0)
     assert sent == expected_attempts
+    # each recovery follows the host recovery rule: ABORT first (docs/PROTOCOL.md)
+    aborts = [r for r in dev.requests if r[0] == Cmd.ABORT]
+    assert len(aborts) == (0 if fault in (Fault.STALE_FRAME, Fault.CORRUPT_REQUEST) else 1)
 
 
 def test_gives_up_after_retries(client, dev):
@@ -81,3 +89,72 @@ def test_request_bytes_survive_garbage_on_the_line(client, dev):
     # Junk written by some other program before our request: the firmware rescans for the magic.
     dev.write(b"\x00\xa5\x00\x00\xff\x13")
     assert client.ping()
+
+
+class Babbler:
+    """A port that never stops sending text, like a stock Pico printing in a loop."""
+
+    def __init__(self):
+        self.written = bytearray()
+
+    def write(self, data):
+        self.written += data
+
+    def read(self, n):
+        time.sleep(0.001)
+        return b"hello from stdio_usb\r\n"[:n]
+
+    def reset_input(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_resync_gives_up_when_line_never_goes_quiet():
+    c = Client(Babbler(), timeout=0.05, retries=3, quiet_s=0.02, resync_max_s=0.2)
+    t0 = time.monotonic()
+    with pytest.raises(TransportError, match="never went quiet"):
+        c.ping()
+    assert time.monotonic() - t0 < 1.0
+
+
+class StaleStream(FakeDevice):
+    """After the real reply is suppressed, keeps delivering valid frames with a foreign seq (abandoned stream)."""
+
+    def read(self, n):
+        self._tx += encode_response(Cmd.PING, 0xEE, Status.OK, 0, bytes(64))
+        return super().read(n)
+
+
+def test_deadline_holds_while_stale_frames_keep_arriving():
+    dev = StaleStream()
+    dev.inject(Fault.DROP)  # the real reply is lost; only foreign frames keep coming
+    c = Client(dev, timeout=0.05, retries=0, quiet_s=0.02, resync_max_s=0.2)
+    t0 = time.monotonic()
+    with pytest.raises(TransportError):
+        # Without a deadline check the stale-frame skip loop would spin forever. With it: timeout, then resync
+        # (which gives up too, because the stream never stops).
+        c.request(Cmd.SET_TIMING, b"\x00")
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_seq_start_is_random():
+    starts = {Client(FakeDevice())._seq for _ in range(50)}
+    assert len(starts) > 5
+
+
+def test_malformed_payloads_are_frame_errors(client, dev, monkeypatch):
+    def short_reply(cmd, seq, args):
+        return encode_response(cmd, seq, Status.OK, payload=b"\x01\x02")
+
+    monkeypatch.setattr(dev, "_execute", short_reply)
+    with pytest.raises(FrameError, match="SET_TIMING"):
+        client.get_timing()
+
+    def zero_clock(cmd, seq, args):
+        return encode_response(cmd, seq, Status.OK, payload=struct.pack("<BBBBI", 1, 0, 1, 0, 0) + b"x")
+
+    monkeypatch.setattr(dev, "_execute", zero_clock)
+    with pytest.raises(FrameError, match="clk_sys"):
+        client.ping()

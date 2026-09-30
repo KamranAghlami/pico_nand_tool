@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import random
 import time
 
+from .errors import FrameError, NandToolError, TransportError
 from .protocol import (
     CRC_LEN,
     PROTO_VERSION,
     RESP_HDR_LEN,
+    TIMING_WIRE_LEN,
     Cmd,
-    FrameError,
     PingInfo,
     Response,
     Status,
@@ -21,6 +23,8 @@ from .protocol import (
 )
 from .transport import Transport
 
+__all__ = ["Client", "DeviceError", "FrameError", "ProtocolMismatch", "TransportError"]
+
 
 def _name(enum, value: int) -> str:
     try:
@@ -29,11 +33,7 @@ def _name(enum, value: int) -> str:
         return f"0x{value:02X}"
 
 
-class TransportError(Exception):
-    """No valid response after all retries (timeouts or corrupted frames)."""
-
-
-class DeviceError(Exception):
+class DeviceError(NandToolError):
     """The device answered with a non-OK status."""
 
     def __init__(self, cmd: int, status: int):
@@ -42,17 +42,27 @@ class DeviceError(Exception):
         super().__init__(f"{_name(Cmd, cmd)}: {_name(Status, status)}")
 
 
-class ProtocolMismatch(Exception):
+class ProtocolMismatch(NandToolError):
     pass
 
 
 class Client:
-    def __init__(self, transport: Transport, *, timeout: float = 1.0, retries: int = 3, quiet_s: float = 0.25):
+    def __init__(
+        self,
+        transport: Transport,
+        *,
+        timeout: float = 1.0,
+        retries: int = 3,
+        quiet_s: float = 0.25,
+        resync_max_s: float = 3.0,
+    ):
         self.t = transport
         self.timeout = timeout
         self.retries = retries
         self.quiet_s = quiet_s  # silence that ends a resync drain (docs/PROTOCOL.md "Host recovery rule")
-        self._seq = 0
+        self.resync_max_s = resync_max_s  # give up if the line never goes quiet (not our device / runaway stream)
+        # Random start: a leftover reply from an earlier process can't match our first (cmd, seq).
+        self._seq = random.randrange(256)
 
     # ---- framing -----------------------------------------------------------------------------------------
 
@@ -63,11 +73,10 @@ class Client:
     def _read_exact(self, n: int, deadline: float) -> bytes:
         buf = bytearray()
         while len(buf) < n:
-            chunk = self.t.read(n - len(buf))
-            if chunk:
-                buf += chunk
-            elif time.monotonic() > deadline:
+            # Checked on every pass, so a device that never stops sending still hits the deadline.
+            if time.monotonic() > deadline:
                 raise TransportError(f"timeout: got {len(buf)} of {n} bytes")
+            buf += self.t.read(n - len(buf))
         return bytes(buf)
 
     def read_response(self, deadline: float) -> Response:
@@ -78,10 +87,17 @@ class Client:
         return decode_response(hdr + rest)
 
     def resync(self) -> None:
-        """Discard everything until the line has been quiet for quiet_s."""
+        """Host recovery rule (docs/PROTOCOL.md): send ABORT (ends any running stream), then discard input until
+        the line has been quiet for quiet_s. Raises TransportError if it never goes quiet within resync_max_s."""
+        self.t.write(encode_request(Cmd.ABORT, self._next_seq()))
         self.t.reset_input()
-        last = time.monotonic()
-        while time.monotonic() - last < self.quiet_s:
+        start = last = time.monotonic()
+        while (now := time.monotonic()) - last < self.quiet_s:
+            if now - start > self.resync_max_s:
+                raise TransportError(
+                    f"line never went quiet within {self.resync_max_s:.1f} s: the device keeps sending data it "
+                    "doesn't frame correctly (is this really a Pico NAND Tool?)"
+                )
             if self.t.read(4096):
                 last = time.monotonic()
 
@@ -100,7 +116,7 @@ class Client:
                     resp = self.read_response(deadline)
                     if resp.seq == seq and resp.cmd == cmd:
                         break
-                    # stale frame from an earlier, abandoned request: skip it
+                    # stale frame from an earlier, abandoned request: skip it (the deadline still applies)
             except (FrameError, TransportError) as e:
                 last_err = e
                 self.resync()
@@ -135,6 +151,8 @@ class Client:
                 raise ValueError("CUSTOM needs a Timing")
             args += timing.pack()
         payload = self.call(Cmd.SET_TIMING, args)
+        if len(payload) != 1 + TIMING_WIRE_LEN or payload[0] not in (1, 2, 3):
+            raise FrameError(f"malformed SET_TIMING reply ({len(payload)} bytes)")
         return TimingMode(payload[0]), Timing.unpack(payload[1:])
 
     def get_timing(self) -> tuple[TimingMode, Timing]:

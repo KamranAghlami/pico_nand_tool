@@ -2,6 +2,8 @@
 
 #include "frame.h"
 
+_Static_assert(2 * PROTO_TIMING_FIELDS + 4 == PROTO_TIMING_WIRE_LEN, "timing_t wire length");
+
 /* Field order == wire order == PROTO_TIMING_DEFAULT_CYCLES order. */
 static uint16_t *timing_field(timing_t *t, unsigned i) {
     uint16_t *const f[PROTO_TIMING_FIELDS] = {
@@ -29,26 +31,24 @@ static uint32_t cyc(uint32_t ns, uint32_t clk_hz) {
     return (uint32_t)(((uint64_t)ns * clk_hz + 999999999u) / 1000000000u);
 }
 
-#define INPUT_SYNC_CYCLES 2 /* RP2040 GPIO input synchronizer */
-
 bool timing_meets_floors(const timing_t *t, uint32_t clk_hz) {
-    /* Datasheet Table 20 (ns); each check is the sum of our phases that spans the constraint. */
-    return (uint32_t)t->t_cs + t->t_setup + t->t_wp >= cyc(20, clk_hz)    /* tCS  (CE# low -> WE# high) */
-        && t->t_cs >= cyc(10, clk_hz)                                     /* tCR                        */
-        && (uint32_t)t->t_setup + t->t_wp >= cyc(10, clk_hz)              /* tCLS, tALS, tDS            */
-        && t->t_wp >= cyc(12, clk_hz)                                     /* tWP                        */
-        && t->t_wh >= cyc(5, clk_hz)                                      /* tCLH, tALH, tDH, tCH       */
-        && (uint32_t)t->t_wh + t->t_setup >= cyc(10, clk_hz)              /* tWH                        */
-        && (uint32_t)t->t_setup + t->t_wp + t->t_wh >= cyc(25, clk_hz)    /* tWC                        */
-        && t->t_whr >= cyc(60, clk_hz)                                    /* tWHR (>= tAR, tCLR)        */
-        && t->t_rea >= cyc(20, clk_hz) + INPUT_SYNC_CYCLES                /* tREA max + sync (>= tRP)   */
-        && t->t_reh >= cyc(10, clk_hz)                                    /* tREH                       */
-        && (uint32_t)t->t_rea + t->t_reh >= cyc(25, clk_hz)               /* tRC                        */
-        && t->t_rhw >= cyc(100, clk_hz)                                   /* tRHW, tRHZ                 */
-        && t->t_wb >= cyc(100, clk_hz)                                    /* tWB max                    */
-        && t->t_rr >= cyc(20, clk_hz)                                     /* tRR                        */
-        && t->t_ceh >= cyc(30, clk_hz)                                    /* tCHZ max (>= tCSD)         */
-        && t->rb_timeout_us >= 25                                         /* tR                         */
+    /* Each check is the sum of our phases that spans one Table 20 constraint (PROTO_FLOOR_* in protocol_defs.h). */
+    return (uint32_t)t->t_cs + t->t_setup + t->t_wp >= cyc(PROTO_FLOOR_TCS_NS, clk_hz)
+        && t->t_cs >= cyc(PROTO_FLOOR_TCR_NS, clk_hz)
+        && (uint32_t)t->t_setup + t->t_wp >= cyc(PROTO_FLOOR_TSETUP_NS, clk_hz)
+        && t->t_wp >= cyc(PROTO_FLOOR_TWP_NS, clk_hz)
+        && t->t_wh >= cyc(PROTO_FLOOR_THOLD_NS, clk_hz)
+        && (uint32_t)t->t_wh + t->t_setup >= cyc(PROTO_FLOOR_TWH_NS, clk_hz)
+        && (uint32_t)t->t_setup + t->t_wp + t->t_wh >= cyc(PROTO_FLOOR_TWC_NS, clk_hz)
+        && t->t_whr >= cyc(PROTO_FLOOR_TWHR_NS, clk_hz)
+        && t->t_rea >= cyc(PROTO_FLOOR_TREA_NS, clk_hz) + PROTO_FLOOR_INPUT_SYNC_CYCLES
+        && t->t_reh >= cyc(PROTO_FLOOR_TREH_NS, clk_hz)
+        && (uint32_t)t->t_rea + t->t_reh >= cyc(PROTO_FLOOR_TRC_NS, clk_hz)
+        && t->t_rhw >= cyc(PROTO_FLOOR_TRHW_NS, clk_hz)
+        && t->t_wb >= cyc(PROTO_FLOOR_TWB_NS, clk_hz)
+        && t->t_rr >= cyc(PROTO_FLOOR_TRR_NS, clk_hz)
+        && t->t_ceh >= cyc(PROTO_FLOOR_TCHZ_NS, clk_hz)
+        && t->rb_timeout_us >= PROTO_FLOOR_RB_TIMEOUT_US
         && t->rb_timeout_us <= PROTO_TIMING_RB_TIMEOUT_MAX_US;
 }
 
