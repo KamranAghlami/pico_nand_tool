@@ -53,6 +53,10 @@ themselves. Never scaffold, stub or "prepare" write paths in advance.
   (1 µs/phase) presets, and floors that `SET_TIMING` enforces. Bus code runs from RAM (`__not_in_flash_func`).
 - R/B#: wait ≥ tWB after the last WE#↑, then poll with a timeout (1 ms; 10 ms for the power-on wait before RESET).
   A timeout is an error status. Never hang.
+- Every `panic()` goes to `fault.c` (`PICO_PANIC_FUNCTION`), which disables interrupts, parks the NAND bus (CE# high
+  first) and shows the FAULT pattern on the LED. There is no text output.
+- LEDs: `led.c` (10 ms timer) + pure `led_pattern.c` (host-tested); patterns are listed in `led_pattern.h` and
+  README. Call `led_activity()` for every request or page moved, and `led_error()` only for transport/chip errors.
 - USB: TinyUSB CDC used **raw** (`tud_cdc_read`/`tud_cdc_write`). Never use `stdio_usb`/`printf`, and never put
   text on the data channel.
 

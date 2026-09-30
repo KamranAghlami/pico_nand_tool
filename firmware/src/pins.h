@@ -13,6 +13,12 @@
 #define PIN_CE 12   /* ball C6, CE#, 10k external pull-up */
 #define PIN_RB 14   /* ball C8, R/B#, open drain, 10k external pull-up; input only */
 
+/* LEDs (patterns: led_pattern.h). -1 = not fitted.
+ * PIN_LED_STATUS: status LED; default the Pico's on-board LED (GP25). If PIN_LED_ACTIVITY is -1, it also flickers
+ * for activity. PIN_LED_ACTIVITY: optional external disk-activity LED (e.g. GP15 -> 330R -> LED -> GND). */
+#define PIN_LED_STATUS 25
+#define PIN_LED_ACTIVITY -1
+
 #define MASK_IO (0xFFu << PIN_IO0)
 #define MASK_CLE (1u << PIN_CLE)
 #define MASK_ALE (1u << PIN_ALE)
@@ -30,5 +36,9 @@ _Static_assert(PIN_IO0 + 7 <= 29, "IO0..IO7 must be 8 contiguous GPIOs");
 _Static_assert((MASK_IO & (MASK_CTRL_IDLE_HIGH | MASK_CTRL_IDLE_LOW | MASK_RB)) == 0, "pin map overlap");
 _Static_assert((MASK_CTRL_IDLE_HIGH & (MASK_CTRL_IDLE_LOW | MASK_RB)) == 0, "pin map overlap");
 _Static_assert((MASK_CTRL_IDLE_LOW & MASK_RB) == 0, "pin map overlap");
+#define PIN_MASK_OR_0(pin) ((pin) >= 0 ? (1u << ((pin) >= 0 ? (pin) : 0)) : 0u)
+_Static_assert((PIN_MASK_OR_0(PIN_LED_STATUS) & MASK_ALL_NAND) == 0, "status LED pin overlaps a NAND pin");
+_Static_assert((PIN_MASK_OR_0(PIN_LED_ACTIVITY) & MASK_ALL_NAND) == 0, "activity LED pin overlaps a NAND pin");
+_Static_assert(PIN_LED_ACTIVITY < 0 || PIN_LED_ACTIVITY != PIN_LED_STATUS, "LED pins must differ");
 
 #endif

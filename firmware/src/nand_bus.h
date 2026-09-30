@@ -6,4 +6,7 @@
  * Call first thing in main(). */
 void nand_bus_init(void);
 
+/* Force the idle state from ANY state (fault handler). CE# goes high first, so no edge after it can latch anything. */
+void nand_bus_park(void);
+
 #endif
