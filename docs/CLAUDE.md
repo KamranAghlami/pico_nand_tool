@@ -81,7 +81,7 @@ python3 -m venv .venv && .venv/bin/pip install -e 'host[test]'
 ```
 
 CI (`.github/workflows/ci.yml`) runs `make -C firmware/tests check`, builds the `.uf2` (uploaded as an artifact),
-and runs the host tests on Python 3.10, 3.12 and 3.14.
+and runs the host tests on the latest stable Python.
 
 ## Memory
 

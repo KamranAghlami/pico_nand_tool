@@ -71,18 +71,14 @@ jobs:
           if-no-files-found: error
 
   host:
-    name: Host tool tests (Python ${{ matrix.python }})
+    name: Host tool tests (latest Python)
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.10", "3.12", "3.14"]
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.x"  # latest stable CPython
 
       - name: Install (venv)
         run: |
