@@ -33,6 +33,12 @@ jobs:
             echo "::notice::firmware/CMakeLists.txt not present yet - skipping firmware build"
           fi
 
+      # Host-compiled checks, no SDK needed: unit tests of the pure modules (crc32, frame, timing) and the
+      # hard safety gate. The allowed opcodes must compile; NAND_CMD(0x80) and non-constant opcodes must not.
+      - name: Firmware host tests + opcode safety gate
+        if: steps.detect.outputs.present == 'true'
+        run: make -C firmware/tests check
+
       - name: Install ARM toolchain
         if: steps.detect.outputs.present == 'true'
         run: |
@@ -70,31 +76,11 @@ jobs:
           ls -l build/*.uf2
           test -n "$(ls build/*.uf2 2>/dev/null)"
 
-      # Hard safety constraint: a forbidden opcode must be rejected at compile time.
-      # The positive control proves the test file itself compiles, so the negative check can't pass by accident.
-      - name: Safety gate - forbidden NAND opcode must not compile
-        if: steps.detect.outputs.present == 'true' && hashFiles('firmware/tests/forbidden_opcode.c') != ''
-        run: |
-          set -u
-          gcc -std=c11 -fsyntax-only -Ifirmware/src -DPOSITIVE_CONTROL firmware/tests/forbidden_opcode.c
-          if gcc -std=c11 -fsyntax-only -Ifirmware/src firmware/tests/forbidden_opcode.c 2> gate.log; then
-            echo "::error::forbidden_opcode.c compiled - the NAND opcode gate is broken"; exit 1
-          fi
-          cat gate.log
-          grep -q "forbidden NAND opcode" gate.log
-
-      - name: Host-compiled firmware unit tests
-        if: steps.detect.outputs.present == 'true' && hashFiles('firmware/tests/test_crc_frame.c') != ''
-        run: |
-          gcc -std=c11 -Wall -Wextra -Werror -Ifirmware/src \
-            firmware/tests/test_crc_frame.c firmware/src/crc32.c -o test_crc_frame
-          ./test_crc_frame
-
       - name: Upload firmware
         if: steps.detect.outputs.present == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: pico-nand-dumper-uf2
+          name: pico-nand-tool-uf2
           path: |
             build/*.uf2
             build/*.elf

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pico-nand-tool"
+version = "0.1.0"
+description = "Host tool for the Pico NAND Tool firmware (read-only raw NAND dumper)"
+requires-python = ">=3.10"
+dependencies = ["pyserial>=3.5"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+nandtool = "nand_tool.cli:main"
+
+[tool.setuptools]
+packages = ["nand_tool"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
