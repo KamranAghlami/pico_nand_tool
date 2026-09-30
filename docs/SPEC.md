@@ -1,4 +1,4 @@
-# Pico NAND Dumper — Project Spec
+# Pico NAND Tool — Project Spec
 
 ## Goal
 
