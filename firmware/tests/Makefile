@@ -1,5 +1,4 @@
-# Host-side firmware checks (no Pico SDK needed): unit tests for the pure modules (crc32, frame, timing, LED
-# patterns) + the NAND opcode safety gate.
+# Host-side firmware checks (no Pico SDK needed): unit tests for the pure modules + the NAND opcode safety gate.
 #   make -C firmware/tests check
 # CFLAGS / CC from the environment or command line are honoured, but the required flags below are always applied.
 REQ_CFLAGS := -std=c11 -Wall -Wextra -Werror
@@ -15,11 +14,9 @@ check: unit gate
 unit: $(BIN)/test_host
 	$(BIN)/test_host
 
-PURE_SRCS := $(SRC)/crc32.c $(SRC)/frame.c $(SRC)/timing.c $(SRC)/led_pattern.c
-
-$(BIN)/test_host: test_host.c $(PURE_SRCS) $(wildcard $(SRC)/*.h)
+$(BIN)/test_host: test_host.c $(SRC)/crc32.c $(SRC)/frame.c $(SRC)/timing.c $(wildcard $(SRC)/*.h)
 	@mkdir -p $(BIN)
-	$(CC) $(REQ_CFLAGS) $(CFLAGS) -I$(SRC) test_host.c $(PURE_SRCS) -o $@
+	$(CC) $(REQ_CFLAGS) $(CFLAGS) -I$(SRC) test_host.c $(SRC)/crc32.c $(SRC)/frame.c $(SRC)/timing.c -o $@
 
 # 1) allowed opcodes compile (positive control), 2) NAND_CMD(0x80) fails with the gate's message,
 # 3) a non-constant opcode fails in the static assertion, 4) no direct calls to the latch, and the call checker

@@ -5,7 +5,6 @@
 
 #include "crc32.h"
 #include "frame.h"
-#include "led_pattern.h"
 #include "nand_cmd.h"
 #include "timing.h"
 
@@ -178,74 +177,8 @@ static void test_opcode_allow_list(void) {
           !nand_cmd_is_allowed(0xD0) && !nand_cmd_is_allowed(0x85) && !nand_cmd_is_allowed(0x100));
 }
 
-/* Count level changes of f over [t0, t1) sampled every ms. */
-static int edges(const led_state_t *s, uint32_t t0, uint32_t t1, bool flicker) {
-    int n = 0;
-    bool prev = led_pattern_status(s, t0, flicker);
-    for (uint32_t t = t0 + 1; t < t1; t++) {
-        bool v = led_pattern_status(s, t, flicker);
-        n += v != prev;
-        prev = v;
-    }
-    return n;
-}
-
-static void test_led_patterns(void) {
-    led_state_t s = {0};
-
-    s.link = LED_LINK_NONE; /* 1 Hz: 2 edges per second */
-    CHECK(edges(&s, 0, 1000, true) == 1 && edges(&s, 0, 4000, true) == 7);
-    CHECK(led_pattern_status(&s, 100, true) && !led_pattern_status(&s, 600, true));
-
-    s.link = LED_LINK_USB; /* heartbeat: short blip every 2 s, mostly off */
-    CHECK(led_pattern_status(&s, 10, true) && !led_pattern_status(&s, 100, true) && !led_pattern_status(&s, 1500, true));
-    CHECK(led_pattern_status(&s, 2010, true));
-
-    s.link = LED_LINK_HOST; /* idle: solid */
-    CHECK(edges(&s, 0, 5000, true) == 0 && led_pattern_status(&s, 1234, true));
-
-    /* one activity event: an immediate off blip, then back to solid */
-    led_pattern_note_activity(&s, 10000);
-    CHECK(!led_pattern_status(&s, 10000, true) && !led_pattern_status(&s, 10039, true));
-    CHECK(led_pattern_status(&s, 10040, true));
-    CHECK(led_pattern_status(&s, 10000 + LED_ACTIVITY_HOLD_MS + 1, true));
-    CHECK(led_pattern_activity(&s, 10000) && led_pattern_activity(&s, 10059) && !led_pattern_activity(&s, 10060));
-    /* with a separate activity LED, the status LED stays solid */
-    CHECK(led_pattern_status(&s, 10005, false));
-
-    /* continuous activity (an event every 5 ms for 1 s): steady ~12.5 Hz flicker, activity LED solid on */
-    for (uint32_t t = 20000; t < 21000; t += 5)
-        led_pattern_note_activity(&s, t);
-    CHECK(edges(&s, 20000, 21000, true) >= 23 && edges(&s, 20000, 21000, true) <= 25);
-    for (uint32_t t = 20000; t < 21000; t++)
-        CHECK(led_pattern_activity(&s, t) || t > 20995);
-
-    /* error: 10 Hz for 2 s overrides everything, then back to solid */
-    led_pattern_note_error(&s, 30000);
-    CHECK(edges(&s, 30000, 32000, true) == 39);
-    CHECK(led_pattern_status(&s, 32000, true) && edges(&s, 32000, 35000, true) == 0);
-
-    /* timestamps wrap after ~49 days */
-    led_state_t w = {.link = LED_LINK_HOST};
-    led_pattern_note_activity(&w, 0xFFFFFFF0u);
-    CHECK(led_pattern_activity(&w, 0x00000010u) && !led_pattern_activity(&w, 0x00000100u));
-
-    /* fault: 3 blinks then a pause, repeating */
-    int on_ms = 0, n = 0;
-    bool prev = false;
-    for (uint32_t t = 0; t < 6 * LED_FAULT_BLINK_MS + LED_FAULT_PAUSE_MS; t++) {
-        bool v = led_pattern_fault(t);
-        on_ms += v;
-        n += v && !prev;
-        prev = v;
-    }
-    CHECK(n == 3 && on_ms == 3 * LED_FAULT_BLINK_MS);
-    CHECK(!led_pattern_fault(6 * LED_FAULT_BLINK_MS + 10) && led_pattern_fault(6 * LED_FAULT_BLINK_MS + LED_FAULT_PAUSE_MS));
-}
-
 int main(void) {
     test_opcode_allow_list();
-    test_led_patterns();
     test_crc32();
     test_frame_roundtrip();
     test_frame_bad_crc();

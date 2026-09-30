@@ -5,7 +5,6 @@
 #include "crc32.h"
 #include "frame.h"
 #include "hardware/clocks.h"
-#include "led.h"
 #include "pico/bootrom.h"
 #include "pico/time.h"
 #include "tusb.h"
@@ -56,8 +55,6 @@ static bool send_resp(uint8_t cmd, uint8_t seq, uint8_t status, uint32_t page, c
     c = crc32_update(c, payload, len);
     put_le32(tail, crc32_final(c));
 
-    if (status == PROTO_ST_ERR_CRC || status == PROTO_ST_ERR_RB_TIMEOUT)
-        led_error(); /* transport or chip trouble; argument errors are the host's business */
     uint32_t s = session; /* one session for the whole frame */
     bool ok = usb_write_all(hdr, sizeof hdr, s) && usb_write_all(payload, len, s) && usb_write_all(tail, sizeof tail, s);
     tud_cdc_write_flush();
@@ -155,7 +152,6 @@ void protocol_poll(void) {
             proto_req_t req;
             switch (frame_parser_feed(&parser, buf[i], &req)) {
             case FRAME_OK:
-                led_activity();
                 dispatch(&req);
                 break;
             case FRAME_BAD_CRC:
@@ -177,7 +173,6 @@ void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts) {
     if (dtr == last_dtr)
         return; /* RTS-only change */
     last_dtr = dtr;
-    led_set_link(dtr ? LED_LINK_HOST : LED_LINK_USB);
     session++; /* makes an in-progress usb_write_all() give up instead of finishing an old frame */
     tud_cdc_write_clear();
     tud_cdc_read_flush();

@@ -10,20 +10,3 @@ tool. The host tool verifies, retries, compares and reconciles multi-pass dumps.
 
 In its current scope the firmware never programs or erases the chip. Only Reset, Read ID, Read Parameter Page, Page
 Read and Read Status can reach the bus, and WP# is hard-wired to GND.
-
-## Status LED
-
-The Pico's on-board LED (GP25) shows what the firmware is doing:
-
-| LED | Meaning |
-|---|---|
-| slow blink, 1 Hz | powered, but USB not enumerated (or suspended) |
-| short blip every 2 s | enumerated, no host program has the port open |
-| solid on | host program connected (port open), idle |
-| flickering | activity: requests / pages moving |
-| fast blink, 10 Hz, for 2 s | an error was reported to the host (request CRC error, R/B# timeout) |
-| triple blink, repeating | **FAULT**: firmware halted, NAND bus parked (CE# high). Power-cycle the Pico. |
-
-**Optional disk-activity LED:** set `PIN_LED_ACTIVITY` in `firmware/src/pins.h` to a free GPIO (e.g. GP15 →
-330 Ω → LED → GND) and rebuild. That LED then lights while requests or pages move, like a disk LED, and the on-board
-LED stops flickering and only shows status. A pin that clashes with a NAND line fails to compile.

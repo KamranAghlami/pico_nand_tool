@@ -25,13 +25,6 @@ void nand_bus_init(void) {
      * R/B# stays an input on its external pull-up. */
 }
 
-void nand_bus_park(void) {
-    gpio_set_mask(MASK_CE);                 /* deselect first: the chip now ignores WE#/RE#/CLE/ALE (Table 7) */
-    gpio_clr_mask(MASK_CTRL_IDLE_LOW);      /* CLE, ALE low */
-    gpio_set_mask(MASK_WE | MASK_RE);       /* strobes idle high */
-    gpio_set_dir_in_masked(MASK_IO);        /* release the data bus */
-}
-
 void nand_bus_cmd_latch_(nand_cmd_t op) {
     /* Layer 2 of the opcode gate (nand_cmd.h): checked before anything touches the bus. */
     if (!nand_cmd_is_allowed((unsigned)op))
