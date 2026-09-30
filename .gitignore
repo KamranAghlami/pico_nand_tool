@@ -1,0 +1,24 @@
+# Firmware build output
+build/
+firmware/build/
+pico-sdk/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Dumps and derived images: large, and possibly sensitive. Never commit them.
+*.bin
+*.img
+*.dump
+*.meta.json
+dumps/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
