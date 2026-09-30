@@ -22,3 +22,4 @@ dumps/
 .vscode/
 .idea/
 .DS_Store
+firmware/tests/build/

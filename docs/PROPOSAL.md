@@ -1,6 +1,7 @@
-# Design Proposal — for review before implementation
+# Design Proposal (approved)
 
-Status: **DRAFT, awaiting review.** No firmware or host code is written until this is approved.
+Status: **APPROVED by the user on 2026-09-30.** This is now a design record. The canonical wire protocol is
+`docs/PROTOCOL.md`; if the two ever differ, `PROTOCOL.md` wins.
 Covers: (1) datasheet cross-check of `SPEC.md`, (2) repo layout, (3) USB transport and protocol
 byte format, (4) default timing values.
 
@@ -57,7 +58,7 @@ I checked every chip fact and timing in `SPEC.md` against the datasheet. **Nothi
 ## 2. Repository layout
 
 ```
-pico_nand_dumper/
+pico_nand_tool/
 ├── CLAUDE.md                     # thin entry point → imports docs/CLAUDE.md + docs/memory/MEMORY.md
 ├── README.md
 ├── .gitignore
@@ -87,11 +88,12 @@ pico_nand_dumper/
 │   │   ├── usb_descriptors.c
 │   │   └── tusb_config.h
 │   └── tests/
+│       ├── Makefile              # `make check`: host-compiled unit tests + opcode gate (no SDK)
 │       ├── forbidden_opcode.c    # MUST FAIL to compile (CI proves the opcode gate works)
-│       └── test_crc_frame.c      # host-compiled unit test for crc32 + frame encode
+│       └── test_host.c           # host-compiled unit tests for crc32, frame, timing
 └── host/
-    ├── pyproject.toml            # package "nand_dumper", console script `nandd`, deps: pyserial; extras [test]: pytest
-    ├── nand_dumper/
+    ├── pyproject.toml            # package "nand_tool", console script `nandtool`, deps: pyserial; extras [test]: pytest
+    ├── nand_tool/
     │   ├── __init__.py
     │   ├── cli.py                # argparse: ping, bus-test, id, status, param, read, dump, compare, reconcile, split, badblocks
     │   ├── geometry.py           # chip constants (page/oob/block sizes, counts, expected ID)
@@ -138,7 +140,7 @@ carries about 0.8–1 MB/s, which is well above the 300 KB/s target.
 - **Device-side flow control:** the device writes only `min(len, tud_cdc_write_available())` and runs `tud_task()`
   while waiting. It never drops or overruns anything: if the host stops reading, the device just blocks, because USB
   NAKs. The device aborts a stream if the host disconnects (DTR drops).
-- VID:PID `2E8A:000A` (Raspberry Pi, Pico CDC). Product string: `"Pico NAND Dumper"`. The host auto-detects by product
+- VID:PID `2E8A:000A` (Raspberry Pi, Pico CDC). Product string: `"Pico NAND Tool"`. The host auto-detects by product
   string and serial number, and `--port` overrides that. (A dedicated Raspberry Pi PID can come later.)
 - Optional, off by default: a second CDC interface for debug logs (`-DNAND_DEBUG_CDC=ON`). It never shares the data
   channel.
@@ -184,7 +186,7 @@ lets the host discard stale frames after an abort or retry without guesswork.
 
 | Code | Name | Args | Response payload |
 |---:|---|---|---|
-| `0x01` | `PING` | — | `u8 proto_ver(=1), u8 fw_major, u8 fw_minor, u8 fw_patch, u32 clk_sys_hz`, then ASCII version string, e.g. `pico-nand-dumper 0.1.0 (g1a2b3c4)` |
+| `0x01` | `PING` | — | `u8 proto_ver(=1), u8 fw_major, u8 fw_minor, u8 fw_patch, u32 clk_sys_hz`, then ASCII version string, e.g. `pico-nand-tool 0.1.0 (g1a2b3c4)` |
 | `0x02` | `BUS_TEST` | `u16 step_us` (0 → 10 µs) | none (sent after the sequence completes) |
 | `0x03` | `SET_TIMING` | `u8 mode`: 0 = query only, 1 = DEFAULT, 2 = SLOW, 3 = CUSTOM (+ `timing_t`, 26 B) | `u8 active_mode` + active `timing_t` (echo) |
 | `0x04` | `RESET` | — | `u32 busy_ns`: measured R/B# low time, 0 = never seen low (a wiring hint) |
@@ -330,12 +332,16 @@ not needed for the 300 KB/s target.
 
 ---
 
-## 6. Decisions I need from you
+## 6. Decisions (resolved 2026-09-30: "approved")
 
-1. Approve the **protocol byte format** (§3.3–3.6), including the additions: `seq` field, end-of-stream frame
-   (`cmd | 0x80`), `ABORT`, `ERR_BUSY`, `ERR_TIMING_FLOOR`, READ_ID `20h` support.
-2. Approve the **DEFAULT timing table** (§4.2) and the SLOW = 1 µs/phase preset.
-3. `READ_STATUS` always prefixes the dummy `00h` (§1 item 2). OK?
-4. READ_PAGES **continues past an R/B# timeout** and the host retries afterwards, instead of stopping the stream. OK?
-5. BUS_TEST optional **diagnostic readback payload** (§3.8): add it, or keep the spec's "none"?
-6. VID:PID `2E8A:000A` for now. OK?
+1. Protocol byte format, including `seq`, the end frame (`cmd | 0x80`), `ABORT`, `ERR_BUSY`, `ERR_TIMING_FLOOR`,
+   and READ_ID `20h`: **approved**.
+2. DEFAULT timing table and SLOW = 1 µs/phase: **approved**.
+3. `READ_STATUS` always prefixes the dummy `00h`: **approved**.
+4. READ_PAGES continues past an R/B# timeout and the host retries afterwards: **approved**.
+5. BUS_TEST diagnostic readback payload: **included**. The blanket approval covered the proposal with this
+   extension listed. It is additive and can be dropped on request.
+6. VID:PID `2E8A:000A`: **approved**.
+
+Later change: the repo was renamed `pico_nand_dumper` → `pico_nand_tool` because other capabilities may be added
+later. The SPEC's read-only constraints are unchanged.

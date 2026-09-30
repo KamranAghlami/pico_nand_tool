@@ -1,11 +1,15 @@
-# Pico NAND Dumper — project instructions
+# Pico NAND Tool — project instructions
 
-A **read-only** raw NAND dumper. A Raspberry Pi Pico (RP2040) bit-bangs a Spansion/SkyHigh **S34ML02G100BHI00**
-(2 Gb SLC, ×8, 3.3 V, BGA63 in a clamshell socket) and streams raw pages (2048 data + 64 OOB) over USB to a Python
-host tool.
+A Raspberry Pi Pico (RP2040) NAND tool. The current scope (SPEC) is a **read-only** raw dumper. It bit-bangs a
+Spansion/SkyHigh **S34ML02G100BHI00** (2 Gb SLC, ×8, 3.3 V, BGA63 in a clamshell socket) and streams raw pages
+(2048 data + 64 OOB) over USB to a Python host tool.
+
+The repo is named `pico_nand_tool` (GitHub: KamranAghlami/pico_nand_tool) because other capabilities may come later.
+**The name does not relax anything below.** Program/erase stays forbidden until the user changes `docs/SPEC.md`
+themselves. Never scaffold, stub or "prepare" write paths in advance.
 
 - Requirements: `docs/SPEC.md` (user-owned; do not edit without being asked).
-- Design under review: `docs/PROPOSAL.md` (repo layout, wire protocol, timing defaults).
+- Wire protocol (canonical): `docs/PROTOCOL.md`. Approved design record: `docs/PROPOSAL.md`.
 - Datasheet: `docs/datasheet.pdf` (doc 002-00676 Rev \*W). **It is the source of truth.** If SPEC and datasheet
   conflict, stop and tell the user. Do not pick one silently.
 
@@ -26,9 +30,9 @@ host tool.
 
 - Work milestone by milestone in the SPEC order: M0 → M6. Correctness before speed. PIO or other optimisation only
   after M5 passes.
-- The proposal in `docs/PROPOSAL.md` must be approved before bulk code is written. Once approved, move the protocol
-  into `docs/PROTOCOL.md` and keep it canonical. Change it there first, then in the code.
-- Protocol constants live in `firmware/src/protocol_defs.h` **and** `host/nand_dumper/protocol.py`. A pytest keeps
+- `docs/PROTOCOL.md` is canonical for the wire format. Change it there first, then in the firmware and host
+  together. `docs/PROPOSAL.md` is the approved design record (2026-09-30).
+- Protocol constants live in `firmware/src/protocol_defs.h` **and** `host/nand_tool/protocol.py`. A pytest keeps
   them in sync, so update both together.
 - Comment every NAND bus sequence with the datasheet section, figure or table it implements (e.g.
   `/* §3.1, Fig. 6.1 */`).
@@ -51,7 +55,7 @@ host tool.
 
 ## Host conventions (Python ≥ 3.10, pyserial, pytest)
 
-- Package `host/nand_dumper`, CLI `nandd`. Everything hardware-independent is unit-tested against
+- Package `host/nand_tool` (`nand_tool`), CLI `nandtool`. Everything hardware-independent is unit-tested against
   `host/tests/fake_device.py`, which simulates the firmware protocol and supports injectable transport errors and
   bitflips.
 - Reference parameter page: rebuilding Table 3.4 for S34ML02G100 ×8 gives ONFI CRC `0xC53B` (bytes 254–255 =
@@ -62,15 +66,19 @@ host tool.
 
 ```sh
 # Firmware (needs arm-none-eabi-gcc, cmake, ninja, PICO_SDK_PATH → pico-sdk 2.3.1)
-cmake -S firmware -B build -G Ninja -DPICO_BOARD=pico && cmake --build build   # → build/*.uf2
+cmake -S firmware -B build -G Ninja && cmake --build build     # → build/pico_nand_tool.uf2
 
-# Host
+# Firmware checks on the host (no SDK): pure-module unit tests + opcode safety gate
+make -C firmware/tests check
+
+# Host tool
 python3 -m venv .venv && .venv/bin/pip install -e 'host[test]'
 .venv/bin/pytest host/tests -q
+.venv/bin/nandtool ping
 ```
 
-CI (`.github/workflows/ci.yml`) builds the firmware, checks that a forbidden opcode fails to compile, and runs the
-host tests on Python 3.10, 3.12 and 3.14. Each job skips itself until its directory exists.
+CI (`.github/workflows/ci.yml`) runs `make -C firmware/tests check`, builds the `.uf2` (uploaded as an artifact),
+and runs the host tests on Python 3.10, 3.12 and 3.14.
 
 ## Memory
 

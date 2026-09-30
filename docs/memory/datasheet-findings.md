@@ -22,4 +22,4 @@ Verified against datasheet Rev \*W on 2026-09-30. SPEC.md has no conflicts with 
 
 **Why:** these facts are easy to get wrong, and they change M2/M3 expectations.
 **How to apply:** use them for firmware sequences, host `status` decoding, and the tests. See
-[[proposal-review-gate]].
+[[milestone-status]].
