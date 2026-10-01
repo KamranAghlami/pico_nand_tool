@@ -64,12 +64,25 @@ gh run list -R KamranAghlami/pico_nand_tool -L 5                  # pick the lat
 gh run download <run-id> -R KamranAghlami/pico_nand_tool -n pico-nand-tool-uf2 -D /tmp/fw
 ```
 
-**Build locally:** you need an ARM GCC toolchain, CMake, Ninja, Git and Pico SDK **2.3.1**. On Ubuntu/Debian:
+**Build locally:** you need an ARM GCC toolchain, CMake, Ninja, Git and Pico SDK **2.3.1**.
+
+Linux (Ubuntu/Debian):
 
 ```sh
 sudo apt install gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
                  cmake ninja-build build-essential git pkg-config libusb-1.0-0-dev
+```
 
+macOS (with [Homebrew](https://brew.sh); Git comes with the Xcode command-line tools, `xcode-select --install`):
+
+```sh
+brew install cmake ninja pkg-config libusb
+brew install --cask gcc-arm-embedded   # Arm's toolchain incl. newlib; the plain arm-none-eabi-gcc formula lacks it
+```
+
+Then, on either OS:
+
+```sh
 git clone --depth 1 --branch 2.3.1 https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
 git -C ~/pico-sdk submodule update --init --depth 1 lib/tinyusb
 export PICO_SDK_PATH=~/pico-sdk
@@ -85,19 +98,29 @@ The result is `build/pico_nand_tool.uf2`. On the first build the SDK also fetche
 1. Hold **BOOTSEL** while plugging the Pico into USB. A drive called `RPI-RP2` appears.
 2. Copy `pico_nand_tool.uf2` onto it. The Pico reboots into the firmware, and its LED lights once USB is enumerated.
 
-To reflash later without pressing BOOTSEL, set the serial port to 1200 baud. The firmware then reboots into
-BOOTSEL:
+   ```sh
+   cp build/pico_nand_tool.uf2 /media/$USER/RPI-RP2/      # Linux (mount point varies by desktop)
+   cp build/pico_nand_tool.uf2 /Volumes/RPI-RP2/          # macOS
+   ```
+
+To reflash later without pressing BOOTSEL, set the serial port to 1200 baud. The firmware then reboots into BOOTSEL
+and the `RPI-RP2` drive appears again:
 
 ```sh
-stty -F /dev/ttyACM0 1200     # Linux
+stty -F /dev/ttyACM0 1200              # Linux
+stty -f /dev/cu.usbmodem* 1200         # macOS (BSD stty uses -f)
 ```
 
-Check that it enumerated: `lsusb -d 2e8a:000a` should list the device, and `nandtool ping` should answer (see
-[Usage](#usage)).
+Serial port names: on Linux `/dev/ttyACM0` (or `ttyACM1`, …); on macOS `/dev/cu.usbmodem<number>`. Use the `cu.`
+device, not `tty.`.
+
+Check that it enumerated: on Linux, `lsusb -d 2e8a:000a` should list the device; on macOS, run
+`ls /dev/cu.usbmodem*`. Either way, `nandtool ping` should answer (see [Usage](#usage)).
 
 ## Install the host tool
 
-You need Python 3.10 or newer. Install the tool into a virtual environment, never into the system Python:
+You need Python 3.10 or newer (on macOS: `brew install python`). Install the tool into a virtual environment,
+never into the system Python:
 
 ```sh
 python3 -m venv .venv
@@ -112,7 +135,7 @@ This installs the `nandtool` command into `.venv/bin/`. Run `source .venv/bin/ac
 - **WSL2:** attach the Pico from Windows with [usbipd-win](https://github.com/dorssel/usbipd-win). From an admin
   PowerShell, run `usbipd list`, then `usbipd bind --busid <id>` once, then `usbipd attach --wsl --busid <id>`. It then
   appears as `/dev/ttyACM0`. Attach again after every reflash or replug.
-- **Windows (native):** auto-detect can't tell the tool apart from other Picos there, so always pass `--port COMx`.
+- **macOS:** no extra setup. Ports need no special permissions, and auto-detect finds the Pico by its product name.
 
 ## Usage
 
@@ -122,7 +145,7 @@ nandtool [--port PORT] [--timeout SECONDS] <command> [options]
 
 | Global option | Meaning |
 |---|---|
-| `--port PORT` | serial port, e.g. `/dev/ttyACM0` or `COM5`. Default: auto-detect USB `2E8A:000A` with product "Pico NAND Tool" |
+| `--port PORT` | serial port, e.g. `/dev/ttyACM0` (Linux) or `/dev/cu.usbmodem1101` (macOS). Default: auto-detect USB `2E8A:000A` with product "Pico NAND Tool" |
 | `--timeout S` | per-response timeout in seconds (default 1.0) |
 | `--version` | host tool and protocol version |
 
