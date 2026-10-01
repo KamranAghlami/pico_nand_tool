@@ -19,6 +19,10 @@ metadata:
   WSL2); `nandtool ping` → `pico-nand-tool 0.1.0 (2c9908b)`, protocol v1, clk_sys 125 MHz; `timing --slow/--default`
   round-trip OK; 50/50 consecutive pings OK. Next: M1 (bus-test in SLOW mode, no chip; user checks with a logic
   analyzer). M1 is NOT yet implemented.
+- 2026-10-01: The LED status/activity feature (7ecb82b) was reverted at the user's request (a749da2). Its panic
+  handler went with it; plan to bring back only "park the NAND bus on panic" at M2.
+- 2026-10-01: The user verified on macOS: the README macOS build/flash/install steps, and the 1200-baud BOOTSEL
+  reboot (`stty -f /dev/cu.usbmodem* 1200`). The user works on both macOS and WSL2 (usbipd).
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after
