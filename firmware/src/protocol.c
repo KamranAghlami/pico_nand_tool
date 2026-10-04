@@ -166,8 +166,71 @@ static void cmd_read_param(const proto_req_t *r) {
     send_resp(r->cmd, r->seq, st, PROTO_PAGE_NONE, buf, st == PROTO_ST_OK ? sizeof buf : 0);
 }
 
+/* ---- READ_PAGES stream (docs/PROTOCOL.md "READ_PAGES stream") --------------------------------------------- */
+
+static void poll_input(void (*on_req)(const proto_req_t *r));
+
+static bool stream_abort;
+static uint8_t stream_abort_seq;
+
+/* Requests that arrive while a stream runs. The first valid ABORT ends the stream after the current page (its OK
+ * follows the end frame); everything else gets an immediate ERR_BUSY with its own seq, between page frames. */
+static void stream_on_req(const proto_req_t *r) {
+    if (r->cmd == PROTO_CMD_ABORT && r->arg_len == 0 && !stream_abort) {
+        stream_abort = true;
+        stream_abort_seq = r->seq;
+        return;
+    }
+    send_status(r, PROTO_ST_ERR_BUSY);
+}
+
+static void cmd_read_pages(const proto_req_t *r) {
+    uint32_t start = r->arg_len == 8 ? get_le32(&r->args[0]) : 0;
+    uint32_t count = r->arg_len == 8 ? get_le32(&r->args[4]) : 0;
+    if (count == 0 || start >= PROTO_TOTAL_PAGES || count > PROTO_TOTAL_PAGES - start) {
+        send_status(r, PROTO_ST_ERR_BAD_ARGS);
+        return;
+    }
+
+    static uint8_t page_buf[PROTO_PAGE_LEN]; /* static: off the 2 KB main stack */
+    uint32_t my_session = session;
+    uint32_t sent = 0, failed = 0;
+    stream_abort = false;
+
+    while (sent < count) {
+        tud_task();
+        poll_input(stream_on_req);
+        if (session != my_session || !tud_cdc_connected())
+            return; /* DTR dropped: the host is gone, nobody to send the end frame to */
+        if (stream_abort)
+            break;
+
+        uint32_t p = start + sent;
+        uint8_t st = nand_read_page(p, page_buf, sizeof page_buf);
+        bool ok;
+        if (st == PROTO_ST_OK) {
+            ok = send_resp(r->cmd, r->seq, PROTO_ST_OK, p, page_buf, sizeof page_buf);
+        } else {
+            failed++;
+            (void)nand_reset(NULL); /* FFh to recover, then continue with p + 1; the host re-requests p */
+            ok = send_resp(r->cmd, r->seq, st, p, NULL, 0);
+        }
+        sent++;
+        if (!ok)
+            return; /* host went away mid-frame */
+    }
+
+    uint8_t end[PROTO_END_LEN];
+    put_le32(&end[0], sent);
+    put_le32(&end[4], failed);
+    send_resp(r->cmd | PROTO_END_FLAG, r->seq, stream_abort ? PROTO_ST_ERR_ABORTED : PROTO_ST_OK, start + sent, end,
+              sizeof end);
+    if (stream_abort)
+        send_resp(PROTO_CMD_ABORT, stream_abort_seq, PROTO_ST_OK, PROTO_PAGE_NONE, NULL, 0);
+}
+
 static void cmd_abort(const proto_req_t *r) {
-    /* No stream is running outside READ_PAGES, so ABORT here is a no-op. */
+    /* No stream is running here (a running stream handles ABORT itself), so ABORT is a no-op. */
     send_status(r, r->arg_len ? PROTO_ST_ERR_BAD_ARGS : PROTO_ST_OK);
 }
 
@@ -191,11 +254,14 @@ static void dispatch(const proto_req_t *r) {
     case PROTO_CMD_READ_PARAM:
         cmd_read_param(r);
         break;
+    case PROTO_CMD_READ_PAGES:
+        cmd_read_pages(r);
+        break;
     case PROTO_CMD_ABORT:
         cmd_abort(r);
         break;
     default:
-        /* Includes commands not implemented yet at this milestone (M3): BUS_TEST, READ_PAGES. */
+        /* Includes commands not implemented yet at this milestone (M4): BUS_TEST. */
         send_status(r, PROTO_ST_ERR_UNKNOWN_CMD);
         break;
     }
@@ -205,29 +271,40 @@ static void dispatch(const proto_req_t *r) {
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 
-void protocol_poll(void) {
+/* Received bytes not yet fed to the parser. Shared, not local: the READ_PAGES stream calls poll_input() from inside
+ * a dispatch, and the nested call must carry on from the same byte so requests are parsed in arrival order. */
+static uint8_t rx_buf[64];
+static uint32_t rx_len, rx_pos;
+
+/* Read pending bytes and hand every complete, CRC-valid request to on_req. A bad CRC gets ERR_CRC here. */
+static void poll_input(void (*on_req)(const proto_req_t *r)) {
     if (!frame_parser_idle(&parser) && now_ms() - last_rx_ms > PROTO_REQ_TIMEOUT_MS)
         frame_parser_reset(&parser); /* stale partial request */
 
-    while (tud_cdc_available()) {
-        uint8_t buf[64];
-        uint32_t n = tud_cdc_read(buf, sizeof buf);
-        last_rx_ms = now_ms(); /* fresh: a dispatch above may have blocked on USB for a while */
-        for (uint32_t i = 0; i < n; i++) {
-            proto_req_t req;
-            switch (frame_parser_feed(&parser, buf[i], &req)) {
-            case FRAME_OK:
-                dispatch(&req);
-                break;
-            case FRAME_BAD_CRC:
-                send_status(&req, PROTO_ST_ERR_CRC);
-                break;
-            case FRAME_NEED_MORE:
-                break;
-            }
+    for (;;) {
+        if (rx_pos == rx_len) {
+            if (!tud_cdc_available())
+                return;
+            rx_len = tud_cdc_read(rx_buf, sizeof rx_buf);
+            rx_pos = 0;
+            last_rx_ms = now_ms(); /* fresh: a dispatch may have blocked on USB for a while */
+            continue;
+        }
+        proto_req_t req;
+        switch (frame_parser_feed(&parser, rx_buf[rx_pos++], &req)) {
+        case FRAME_OK:
+            on_req(&req);
+            break;
+        case FRAME_BAD_CRC:
+            send_status(&req, PROTO_ST_ERR_CRC);
+            break;
+        case FRAME_NEED_MORE:
+            break;
         }
     }
 }
+
+void protocol_poll(void) { poll_input(dispatch); }
 
 /* DTR changed: the host opened or closed the port. Whatever is left from the previous session is stale: a partly
  * sent response in the TX FIFO (TinyUSB only clears it on bus reset), unread request bytes, a partial request. */
@@ -241,6 +318,7 @@ void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts) {
     session++; /* makes an in-progress usb_write_all() give up instead of finishing an old frame */
     tud_cdc_write_clear();
     tud_cdc_read_flush();
+    rx_len = rx_pos = 0;
     frame_parser_reset(&parser);
 }
 

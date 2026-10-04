@@ -1,13 +1,17 @@
 """Fake Pico NAND Tool: simulates the firmware's wire protocol in-process and implements the Transport interface.
 
-Mirrors the firmware as of milestone M3: PING, SET_TIMING, ABORT, RESET, READ_ID, READ_STATUS and READ_PARAM are
-implemented, and every other command answers ERR_UNKNOWN_CMD, exactly like the real M3 firmware. It grows with the
-firmware, milestone by milestone (the NAND image, bitflips and READ_PAGES streaming come at M4-M5).
+Mirrors the firmware as of milestone M4: everything except BUS_TEST (which answers ERR_UNKNOWN_CMD, like the real M4
+firmware). READ_PAGES streams lazily: page frames are produced as the host reads them, so ABORT and ERR_BUSY interleave
+between frames as on the real device.
 
 The simulated chip is an S34ML02G100 with WP# low. Hardware faults: chip_id (e.g. all FFh = no chip), wp_high
 (SR bit 7 set), rb_stuck_low (RESET times out), rb_never_low (RESET reports busy_ns = 0), id_glitches (a list of
 IDs returned by the next READ_IDs at addr 00h), param (the 768 bytes READ_PARAM returns; default: the Table 3.4
 reference page, three times).
+
+NAND image: page_data(p) is deterministic synthetic data (every 5th page erased = all FFh). Data faults: flaky_bits
+{page: [(offset, mask), ...]} XORs those bits on every 2nd read of that page; rb_timeouts {page: n} makes the next n
+reads of that page report ERR_RB_TIMEOUT; page_faults {page: Fault} corrupts that page's frame in transit, once.
 
 Transport faults can be injected with inject(). Each queued fault applies to the next non-ABORT request received
 (ABORTs are the client's own recovery traffic, docs/PROTOCOL.md "Host recovery rule").
@@ -15,19 +19,24 @@ Transport faults can be injected with inject(). Each queued fault applies to the
 
 from __future__ import annotations
 
+import random
 import struct
+from dataclasses import dataclass
 from enum import Enum, auto
 
 from golden_param import GOLDEN_PARAM_X3
 
 from nand_tool.protocol import (
     CRC_LEN,
+    END_FLAG,
     MAGIC_REQ,
     MAX_ARGS,
+    PAGE_LEN,
     PAGE_NONE,
     PROTO_VERSION,
     REQ_HDR_LEN,
     TIMING_WIRE_LEN,
+    TOTAL_PAGES,
     Cmd,
     Status,
     Timing,
@@ -44,6 +53,26 @@ class Fault(Enum):
     GARBAGE_PREFIX = auto()   # junk bytes arrive before the response
     STALE_FRAME = auto()      # a valid frame with an old seq arrives before the response
     CORRUPT_REQUEST = auto()  # the request is corrupted on the way in -> device answers ERR_CRC
+
+
+def page_data(page: int) -> bytes:
+    """The fake NAND image: every 5th page erased, the rest pseudo-random with a good-block marker (spare byte 0)."""
+    if page % 5 == 4:
+        return b"\xff" * PAGE_LEN
+    data = bytearray(random.Random(page).randbytes(PAGE_LEN))
+    data[2048] = 0xFF
+    return bytes(data)
+
+
+@dataclass
+class _Stream:
+    seq: int
+    nxt: int
+    end: int
+    first_fault: Fault | None
+    sent: int = 0
+    failed: int = 0
+    abort_seq: int | None = None
 
 
 class FakeDevice:
@@ -77,6 +106,11 @@ class FakeDevice:
         self.reset_busy_ns = reset_busy_ns
         self.id_glitches: list[bytes] = []
         self.param = GOLDEN_PARAM_X3
+        self.flaky_bits: dict[int, list[tuple[int, int]]] = {}
+        self.rb_timeouts: dict[int, int] = {}
+        self.page_faults: dict[int, Fault] = {}
+        self.page_reads: dict[int, int] = {}  # page -> number of times read from the array
+        self._stream: _Stream | None = None
         self.sr = self._sr_after_reset()  # power-on state equals the reset state (§3.12)
         self._rx = bytearray()
         self._tx = bytearray()
@@ -92,6 +126,8 @@ class FakeDevice:
         self._process()
 
     def read(self, n: int) -> bytes:
+        while self._stream is not None and len(self._tx) < n:
+            self._stream_step()
         out = bytes(self._tx[:n])
         del self._tx[:n]
         return out
@@ -150,7 +186,58 @@ class FakeDevice:
             return
         args = body[REQ_HDR_LEN:]
         self.requests.append((cmd, seq, args))
+        st = self._stream
+        if st is not None:  # same rules as the firmware's stream_on_req()
+            if cmd == Cmd.ABORT and not args and st.abort_seq is None:
+                st.abort_seq = seq
+            else:
+                self._emit(encode_response(cmd, seq, Status.ERR_BUSY), fault, seq)
+            return
+        if cmd == Cmd.READ_PAGES:
+            self._start_stream(seq, args, fault)
+            return
         self._emit(self._execute(cmd, seq, args), fault, seq)
+
+    # ---- READ_PAGES stream ----------------------------------------------------------------------------------
+
+    def _start_stream(self, seq: int, args: bytes, fault: Fault | None) -> None:
+        start, count = struct.unpack("<II", args) if len(args) == 8 else (0, 0)
+        if count == 0 or start >= TOTAL_PAGES or count > TOTAL_PAGES - start:
+            self._emit(encode_response(Cmd.READ_PAGES, seq, Status.ERR_BAD_ARGS), fault, seq)
+            return
+        self._stream = _Stream(seq, start, start + count, fault)
+
+    def read_page(self, page: int) -> bytes:
+        n = self.page_reads[page] = self.page_reads.get(page, 0) + 1
+        data = bytearray(page_data(page))
+        if n % 2 == 0:
+            for offset, mask in self.flaky_bits.get(page, []):
+                data[offset] ^= mask
+        return bytes(data)
+
+    def _stream_step(self) -> None:
+        st = self._stream
+        assert st is not None
+        if st.abort_seq is not None or st.nxt == st.end:
+            status = Status.OK if st.abort_seq is None else Status.ERR_ABORTED
+            end = struct.pack("<II", st.sent, st.failed)
+            self._tx += encode_response(Cmd.READ_PAGES | END_FLAG, st.seq, status, st.nxt, end)
+            if st.abort_seq is not None:
+                self._tx += encode_response(Cmd.ABORT, st.abort_seq, Status.OK)
+            self._stream = None
+            return
+        p = st.nxt
+        st.nxt += 1
+        st.sent += 1
+        if self.rb_timeouts.get(p, 0) > 0:
+            self.rb_timeouts[p] -= 1
+            st.failed += 1
+            frame = encode_response(Cmd.READ_PAGES, st.seq, Status.ERR_RB_TIMEOUT, p)
+        else:
+            frame = encode_response(Cmd.READ_PAGES, st.seq, Status.OK, p, self.read_page(p))
+        fault = self.page_faults.pop(p, None) or st.first_fault
+        st.first_fault = None
+        self._emit(frame, fault, st.seq)
 
     def _emit(self, frame: bytes, fault: Fault | None, seq: int) -> None:
         if fault is Fault.DROP:

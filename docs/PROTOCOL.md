@@ -93,7 +93,9 @@ Every request gets exactly one response frame, except `READ_PAGES`, which gets `
   and a payload of `u32 pages_sent, u32 pages_failed` (8 B). `pages_sent` counts page frames of either status.
 - Between pages the device parses incoming requests. `ABORT` ends the stream after the current page: the end frame
   carries the stream's seq and `ERR_ABORTED`, followed by the `ABORT` request's own `OK` response. Any other valid
-  request gets an immediate `ERR_BUSY` response with its own seq, interleaved between page frames.
+  request gets an immediate `ERR_BUSY` response with its own seq, interleaved between page frames. That includes a
+  second `ABORT`, an `ABORT` with arguments, and another `READ_PAGES`; a request with a bad CRC still gets `ERR_CRC`.
+- If the host closes the port (DTR drops) the stream stops at once, without an end frame.
 
 ### Host recovery rule
 

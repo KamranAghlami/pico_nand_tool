@@ -178,3 +178,66 @@ def test_param_valid_page_with_wrong_geometry_fails(capsys):
     out = capsys.readouterr().out
     assert "MISMATCH : blocks_per_lun = 1024, SPEC expects 2048" in out
     assert "(datasheet: 3B C5)" in out
+
+
+def test_read_block_pass(capsys):
+    dev = FakeDevice()
+    assert run(dev, "read", "--block", "3", "--repeat", "2") == 0
+    out = capsys.readouterr().out
+    assert "pages 192..255 (block 3), 2 passes" in out
+    assert "all 64 pages identical across 2 reads" in out
+    assert "erased   : 13 of 64 pages all FFh" in out  # every 5th fake page
+    assert "result   : PASS" in out
+    assert dev.page_reads[192] == 2 and dev.page_reads[255] == 2
+
+
+def test_read_single_page_repeat(capsys):
+    assert run(FakeDevice(), "read", "--page", "0", "--repeat", "100") == 0
+    out = capsys.readouterr().out
+    assert "page 0 (block 0), 100 passes" in out and "all 1 page identical across 100 reads" in out
+
+
+def test_read_range_label_spans_blocks(capsys):
+    assert run(FakeDevice(), "read", "--page", "60", "--count", "10") == 0
+    assert "pages 60..69 (blocks 0..1), 1 pass" in capsys.readouterr().out
+
+
+def test_read_unstable_bit_fails(capsys):
+    dev = FakeDevice()
+    dev.flaky_bits = {130: [(2048, 0x80)]}  # spare byte 0, bit 7
+    assert run(dev, "read", "--block", "2", "--repeat", "3") == 1
+    out = capsys.readouterr().out
+    assert "stable   : NO, 1 of 64 pages differ" in out
+    assert "page 130 offset 2048 (spare+0)" in out and "bits 10000000" in out
+    assert "result   : FAIL" in out
+
+
+def test_read_rb_timeout_fails(capsys):
+    dev = FakeDevice()
+    dev.rb_timeouts = {5: 1}
+    assert run(dev, "read", "--page", "0", "--count", "8") == 1
+    out = capsys.readouterr().out
+    assert "R/B#     : 1 timeouts (page x count): 5 x1" in out and "result   : FAIL" in out
+
+
+def test_read_survives_transport_faults(capsys):
+    dev = FakeDevice()
+    dev.page_faults = {3: Fault.FLIP, 9: Fault.DROP}
+    assert run(dev, "read", "--page", "0", "--count", "12", "--repeat", "2") == 0
+    assert "result   : PASS" in capsys.readouterr().out
+
+
+def test_read_range_past_the_end(capsys):
+    assert run(FakeDevice(), "read", "--page", "131071", "--count", "2") == 1
+    assert "run past the last page" in capsys.readouterr().err
+
+
+def test_read_needs_page_or_block():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        run(FakeDevice(), "read")
+    with pytest.raises(SystemExit):
+        run(FakeDevice(), "read", "--page", "131072")
+    with pytest.raises(SystemExit):
+        run(FakeDevice(), "read", "--block", "2048")

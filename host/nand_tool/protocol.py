@@ -30,6 +30,9 @@ PAGE_NONE = 0xFFFFFFFF
 END_FLAG = 0x80
 
 PARAM_LEN = 768  # READ_PARAM payload: 3 x 256-byte parameter page copies
+PAGE_LEN = 2112  # READ_PAGES page frame payload: 2048 data + 64 spare
+TOTAL_PAGES = 131072  # READ_PAGES: start + count must not exceed this
+END_LEN = 8  # READ_PAGES end frame payload: u32 pages_sent, u32 pages_failed
 
 
 class Cmd(IntEnum):

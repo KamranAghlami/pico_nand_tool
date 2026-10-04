@@ -40,6 +40,13 @@ metadata:
   the reference page. That also argues R/B# works: copy 0 is read first, right after tR, and would fail if the
   wait ended early. Not yet airtight; M4 page reads (tR ≤ 25 µs) are the next check.
 - 2026-10-04: **M3 APPROVED by the user**; M2 + M3 committed and pushed. M4 next.
+- 2026-10-04: M4 code written (nand_read_page, READ_PAGES stream with ABORT/ERR_BUSY/DTR handling, shared RX
+  buffer so a nested poll keeps arrival order; host Client.read_pages with the recovery rule; `nandtool read`).
+  On hardware, run in the session: page 0 x100 identical; blocks 0, 1, 777, 1024, 1531, 2047 x3 identical, no R/B#
+  timeouts; pages 64000..66047 x2 identical at ~950 KiB/s (SPEC target 300 KB/s). Early stop, mid-stream ERR_BUSY
+  and an ABORT in the same packet as READ_PAGES all behave per PROTOCOL.md. Stable full-speed page data also settles
+  the R/B# question: it works; a reset of an idle chip is just faster than the first sample.
+- 2026-10-04: **M4 APPROVED by the user**; committed and pushed. M5 next.
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after

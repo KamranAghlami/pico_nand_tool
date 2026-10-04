@@ -19,4 +19,8 @@ uint8_t nand_read_status(uint8_t *sr);
  * Fig. 44). n = 768 gives the three redundant 256-byte copies (Table 3.4). */
 uint8_t nand_read_param(uint8_t *buf, uint32_t n);
 
+/* 00h, 5 address cycles (column 0, row = page, Table 5), 30h, wait tR on R/B#, read n bytes from column 0 (§3.1,
+ * Fig. 6.1). n = 2112 is the whole page: 2048 data + 64 spare. */
+uint8_t nand_read_page(uint32_t page, uint8_t *buf, uint32_t n);
+
 #endif

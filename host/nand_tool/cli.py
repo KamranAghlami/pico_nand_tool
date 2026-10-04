@@ -1,10 +1,11 @@
-"""`nandtool` command line. M3 scope: ping, timing, id, status, param. Further subcommands arrive with their milestones
-(docs/SPEC.md)."""
+"""`nandtool` command line. M4 scope: ping, timing, id, status, param, read. Further subcommands arrive with their
+milestones (docs/SPEC.md)."""
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
 from collections import Counter
 from collections.abc import Callable
 
@@ -16,9 +17,12 @@ from .geometry import (
     EXPECTED_PARAM,
     ONFI_ADDR,
     ONFI_SIGNATURE,
+    PAGE_DATA,
+    PAGES_PER_BLOCK,
     PARAM_CRC_BYTES,
     SR_AFTER_RESET,
     SR_NOT_PROTECTED,
+    TOTAL_PAGES,
     decode_id,
     decode_status,
 )
@@ -164,11 +168,98 @@ def cmd_param(client: Client, args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _describe_unstable(page: int, reads: list[bytes], limit: int) -> list[str]:
+    """Offsets where the reads of one page disagree: the values seen (with counts) and which bits differ."""
+    lines = []
+    diff_offsets = [i for i in range(len(reads[0])) if len({r[i] for r in reads}) > 1]
+    for off in diff_offsets[:limit]:
+        values = Counter(r[off] for r in reads)
+        bits = 0
+        for v in values:
+            bits |= v ^ reads[0][off]
+        area = "data" if off < PAGE_DATA else f"spare+{off - PAGE_DATA}"
+        seen = ", ".join(f"{v:02X}h x{n}" for v, n in values.most_common())
+        lines.append(f"  page {page} offset {off} ({area}): {seen}; bits {bits:08b}")
+    if len(diff_offsets) > limit:
+        lines.append(f"  page {page}: ... {len(diff_offsets) - limit} more differing bytes")
+    return lines
+
+
+def cmd_read(client: Client, args: argparse.Namespace) -> int:
+    if args.block is not None:
+        start, count = args.block * PAGES_PER_BLOCK, args.count or PAGES_PER_BLOCK
+    else:
+        start, count = args.page, args.count or 1
+    if start + count > TOTAL_PAGES:
+        print(f"error: pages {start}..{start + count - 1} run past the last page ({TOTAL_PAGES - 1})", file=sys.stderr)
+        return 1
+    last = start + count - 1
+    b0, b1 = start // PAGES_PER_BLOCK, last // PAGES_PER_BLOCK
+    pages = f"pages {start}..{last}" if count > 1 else f"page {start}"
+    blocks = f"blocks {b0}..{b1}" if b1 > b0 else f"block {b0}"
+    print(f"read     : {pages} ({blocks}), {args.repeat} pass{'es' if args.repeat > 1 else ''}")
+
+    reads: dict[int, list[bytes]] = {p: [] for p in range(start, start + count)}
+    timeouts: Counter[int] = Counter()
+    total_bytes, total_s = 0, 0.0
+    for _ in range(args.repeat):
+        t0 = time.monotonic()
+        for page, data in client.read_pages(start, count):
+            if data is None:
+                timeouts[page] += 1
+            else:
+                reads[page].append(data)
+                total_bytes += len(data)
+        total_s += time.monotonic() - t0
+    if total_s > 0:
+        print(f"speed    : {total_bytes / total_s / 1024:.0f} KiB/s ({total_bytes} bytes in {total_s:.2f} s)")
+
+    unstable = [p for p, r in reads.items() if len(set(r)) > 1]
+    erased = sum(1 for r in reads.values() if r and r[0] == b"\xff" * len(r[0]))
+    ok = not unstable and not timeouts
+    if timeouts:
+        pages = ", ".join(f"{p} x{n}" for p, n in sorted(timeouts.items()))
+        print(f"R/B#     : {sum(timeouts.values())} timeouts (page x count): {pages}")
+    else:
+        print("R/B#     : no timeouts")
+    if args.repeat > 1:
+        if unstable:
+            print(f"stable   : NO, {len(unstable)} of {count} pages differ between reads:")
+            for p in unstable[:20]:
+                for line in _describe_unstable(p, reads[p], limit=8):
+                    print(line)
+        else:
+            print(f"stable   : all {count} page{'s' if count > 1 else ''} identical across {args.repeat} reads")
+    print(f"erased   : {erased} of {count} page{'s' if count > 1 else ''} all FFh")
+    if args.hexdump:
+        for p, r in reads.items():
+            if r:
+                print(f"page {p} (first read):")
+                _hexdump(r[0])
+    print("result   : PASS" if ok else "result   : FAIL")
+    return 0 if ok else 1
+
+
 def _positive_int(text: str) -> int:
     n = int(text)
     if n < 1:
         raise argparse.ArgumentTypeError("must be >= 1")
     return n
+
+
+def _ranged_int(text: str, limit: int, what: str) -> int:
+    n = int(text, 0)
+    if not 0 <= n < limit:
+        raise argparse.ArgumentTypeError(f"{what} must be 0..{limit - 1}")
+    return n
+
+
+def _page_index(text: str) -> int:
+    return _ranged_int(text, TOTAL_PAGES, "page")
+
+
+def _block_index(text: str) -> int:
+    return _ranged_int(text, TOTAL_PAGES // PAGES_PER_BLOCK, "block")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -201,6 +292,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--hexdump", action="store_true", help="also print all 768 raw bytes")
     sp.set_defaults(func=cmd_param)
+
+    sp = sub.add_parser("read", help="read pages (2112 B each) K times and check every read is identical")
+    g = sp.add_mutually_exclusive_group(required=True)
+    g.add_argument("--page", type=_page_index, metavar="N", help="first page (0..131071)")
+    g.add_argument("--block", type=_block_index, metavar="B", help="whole block B (pages B*64 .. B*64+63)")
+    sp.add_argument("--count", type=_positive_int, metavar="M", help="number of pages (default 1, or 64 with --block)")
+    sp.add_argument("--repeat", type=_positive_int, default=1, metavar="K", help="read the range K times (default 1)")
+    sp.add_argument("--hexdump", action="store_true", help="print the first read of every page")
+    sp.set_defaults(func=cmd_read)
     return p
 
 

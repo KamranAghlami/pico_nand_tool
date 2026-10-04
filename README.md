@@ -165,6 +165,7 @@ Exit status: 0 = success, 1 = error (printed as `error: …`), 130 = interrupted
 | `nandtool id [--repeat N] [--onfi]` | Reads the chip ID (`90h 00h`) and checks it against `01 DA 90 95 44`; decodes bytes 3–5. `--repeat N` reads it N times and checks every read is identical. `--onfi` also reads the ONFI signature (`90h 20h`). Exit 1 on any mismatch. |
 | `nandtool status [--reset]` | Reads and decodes the status register (`00h 70h`). `--reset` issues `FFh` first and shows the R/B# busy time; exit 1 unless the status is then `60h`. Always exit 1 if the chip reports WP# high. |
 | `nandtool param [--hexdump]` | Reads the 3 ONFI parameter page copies (`FFh`, then `ECh 00h`). Checks each copy's `ONFI` signature and CRC-16 (expected bytes `3B C5`), checks that the copies are identical, decodes the geometry and compares it with the SPEC. Exit 1 on any failure. This is the main end-to-end wiring check: a stuck, swapped or flaky data line fails it. |
+| `nandtool read (--page N \| --block B) [--count M] [--repeat K] [--hexdump]` | Reads pages (2112 B each: 2048 data + 64 spare) as one stream, K times, and checks that every read of every page is identical. Unstable bytes are listed with the values seen and the differing bits. R/B# timeouts are reported, never filled in. Shows throughput. `--block B` reads the 64 pages of block B. Exit 1 on any unstable page or timeout. |
 
 The timing setting lives in the Pico's RAM. It resets to DEFAULT when the Pico reboots.
 
@@ -195,7 +196,6 @@ expected : 01 DA 90 95 44 (S34ML02G1 x8): match
 | Milestone | Commands |
 |---|---|
 | M1 | `bus-test`: toggles every control and data line in a fixed order (CE# stays high, so it is chip-safe) |
-| M4 | `read --page N [--repeat K]` |
 | M5 | `dump --out FILE [--start N --count M] [--resume] [--force]`, `compare A B`, `reconcile A B --out FINAL` |
 | M6 | `split IMAGE` (→ `data.bin` + `oob.bin`), `badblocks IMAGE` |
 

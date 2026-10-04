@@ -22,6 +22,9 @@
 #define PROTO_END_FLAG 0x80
 
 #define PROTO_PARAM_LEN 768 /* READ_PARAM payload: 3 x 256-byte parameter page copies */
+#define PROTO_PAGE_LEN 2112 /* READ_PAGES page frame payload: 2048 data + 64 spare */
+#define PROTO_TOTAL_PAGES 131072 /* READ_PAGES: start + count must not exceed this */
+#define PROTO_END_LEN 8 /* READ_PAGES end frame payload: u32 pages_sent, u32 pages_failed */
 
 /* Commands */
 #define PROTO_CMD_PING 0x01

@@ -2,12 +2,12 @@ import struct
 import time
 
 import pytest
-from fake_device import FakeDevice, Fault
+from fake_device import FakeDevice, Fault, page_data
 from golden_param import GOLDEN_PARAM_X3
 
 from nand_tool.client import Client, DeviceError, ProtocolMismatch, TransportError
 from nand_tool.errors import FrameError
-from nand_tool.protocol import Cmd, Status, Timing, TimingMode, encode_response
+from nand_tool.protocol import Cmd, Status, Timing, TimingMode, encode_request, encode_response
 
 
 def test_ping(client, dev):
@@ -55,11 +55,10 @@ def test_bad_args(client):
     assert e.value.status == Status.ERR_BAD_ARGS
 
 
-def test_unimplemented_command_at_m3(client):
-    for cmd in (Cmd.BUS_TEST, Cmd.READ_PAGES):
-        with pytest.raises(DeviceError) as e:
-            client.call(cmd)
-        assert e.value.status == Status.ERR_UNKNOWN_CMD
+def test_unimplemented_command_at_m4(client):
+    with pytest.raises(DeviceError) as e:
+        client.call(Cmd.BUS_TEST)
+    assert e.value.status == Status.ERR_UNKNOWN_CMD
 
 
 def test_reset_and_status(client, dev):
@@ -218,3 +217,119 @@ def test_malformed_payloads_are_frame_errors(client, dev, monkeypatch):
     monkeypatch.setattr(dev, "_execute", zero_clock)
     with pytest.raises(FrameError, match="clk_sys"):
         client.ping()
+
+
+# ---- READ_PAGES stream ----------------------------------------------------------------------------------------
+
+
+def _read_all(client, start, count):
+    return list(client.read_pages(start, count))
+
+
+def _stream_requests(dev):
+    return [struct.unpack("<II", a) for c, _, a in dev.requests if c == Cmd.READ_PAGES]
+
+
+def test_read_pages(client, dev):
+    got = _read_all(client, 100, 10)
+    assert [p for p, _ in got] == list(range(100, 110))
+    assert all(data == page_data(p) for p, data in got)
+    assert _stream_requests(dev) == [(100, 10)]
+    assert client.ping()  # nothing left on the line
+
+
+def test_read_last_page(client):
+    assert _read_all(client, 131071, 1)[0][0] == 131071
+
+
+@pytest.mark.parametrize("start,count", [(0, 0), (-1, 1), (131071, 2)])
+def test_read_pages_range_checked_on_host(client, start, count):
+    with pytest.raises(ValueError):
+        _read_all(client, start, count)
+
+
+@pytest.mark.parametrize("args", [struct.pack("<II", 0, 0), struct.pack("<II", 131071, 2), struct.pack("<I", 0)])
+def test_read_pages_bad_args_on_device(client, args):
+    with pytest.raises(DeviceError) as e:
+        client.call(Cmd.READ_PAGES, args)
+    assert e.value.status == Status.ERR_BAD_ARGS
+
+
+def test_rb_timeout_page_is_yielded_as_none(client, dev):
+    dev.rb_timeouts = {3: 1}
+    got = _read_all(client, 0, 6)
+    assert [p for p, _ in got] == list(range(6))
+    assert got[3][1] is None
+    assert all(d == page_data(p) for p, d in got if p != 3)
+    assert _stream_requests(dev) == [(0, 6)]  # an R/B# timeout is not a framing error: no restart
+
+
+@pytest.mark.parametrize("fault", [f for f in Fault if f is not Fault.CORRUPT_REQUEST])  # that one is request-side
+def test_stream_recovers_from_transport_fault(client, dev, fault):
+    dev.page_faults = {5: fault}
+    got = _read_all(client, 0, 10)
+    assert [p for p, _ in got] == list(range(10))  # every page once, in order
+    assert all(d == page_data(p) for p, d in got)
+    if fault is Fault.STALE_FRAME:
+        assert _stream_requests(dev) == [(0, 10)]  # skipped by seq matching
+    else:
+        assert _stream_requests(dev) == [(0, 10), (5, 5)]  # re-issued from the first page not accepted
+    assert client.ping()
+
+
+@pytest.mark.parametrize("fault", list(Fault))
+def test_request_fault_on_stream_start(client, dev, fault):
+    dev.inject(fault)  # applies to the READ_PAGES request / its first frame
+    got = _read_all(client, 7, 3)
+    assert [(p, d) for p, d in got] == [(p, page_data(p)) for p in range(7, 10)]
+
+
+def test_err_busy_frames_are_skipped(client, dev):
+    gen = client.read_pages(0, 5)
+    assert next(gen)[0] == 0
+    dev.write(encode_request(Cmd.PING, 0x77))  # someone else's request while the stream runs
+    rest = list(gen)
+    assert [p for p, _ in rest] == [1, 2, 3, 4]
+    busy = [r for r in dev.requests if r[0] == Cmd.PING]
+    assert busy == [(Cmd.PING, 0x77, b"")]
+
+
+def test_stopping_early_aborts_the_stream(client, dev):
+    for p, _ in client.read_pages(0, 1000):
+        if p == 2:
+            break
+    assert any(c == Cmd.ABORT for c, _, _ in dev.requests)
+    assert dev._stream is None
+    assert client.ping()
+    assert dev.page_reads.get(10) is None  # the device stopped right after the ABORT
+
+
+class AlwaysDrop(dict):
+    def pop(self, key, default=None):
+        return Fault.DROP if key == 5 else default
+
+
+def test_stream_gives_up_without_progress(client, dev):
+    dev.page_faults = AlwaysDrop()
+    got = []
+    with pytest.raises(TransportError, match="no progress at page 5 after 4 attempts"):
+        for item in client.read_pages(0, 10):
+            got.append(item[0])
+    assert got == [0, 1, 2, 3, 4]
+    assert dev._stream is None  # aborted, nothing left running
+
+
+def test_flaky_bits_alternate(client, dev):
+    dev.flaky_bits = {0: [(17, 0x08)]}
+    a = _read_all(client, 0, 1)[0][1]
+    b = _read_all(client, 0, 1)[0][1]
+    assert a == page_data(0) and b != a
+    assert [i for i in range(len(a)) if a[i] != b[i]] == [17]
+
+
+def test_busy_device_is_resynced_and_retried(client, dev):
+    dev._start_stream(0x99, struct.pack("<II", 500, 1000), None)  # a stream someone else left running
+    got = _read_all(client, 0, 3)
+    assert [p for p, _ in got] == [0, 1, 2]
+    assert any(c == Cmd.ABORT for c, _, _ in dev.requests)
+    assert _stream_requests(dev) == [(0, 3), (0, 3)]

@@ -5,14 +5,20 @@ from __future__ import annotations
 import random
 import struct
 import time
+from collections.abc import Iterator
 
 from .errors import FrameError, NandToolError, TransportError
 from .protocol import (
     CRC_LEN,
+    END_FLAG,
+    END_LEN,
+    PAGE_LEN,
+    PAGE_NONE,
     PARAM_LEN,
     PROTO_VERSION,
     RESP_HDR_LEN,
     TIMING_WIRE_LEN,
+    TOTAL_PAGES,
     Cmd,
     PingInfo,
     Response,
@@ -187,3 +193,77 @@ class Client:
         if len(payload) != 1:
             raise FrameError(f"malformed READ_STATUS reply ({len(payload)} bytes)")
         return payload[0]
+
+    def read_pages(self, start: int, count: int) -> Iterator[tuple[int, bytes | None]]:
+        """Stream pages [start, start + count): yields (page, 2112 bytes), or (page, None) when the device reported
+        an R/B# timeout for that page (the caller decides whether to re-read it).
+
+        Every page is yielded exactly once, in order. On a frame error the host recovery rule applies
+        (docs/PROTOCOL.md): ABORT, drain, then re-issue READ_PAGES from the first page not yet yielded. Bytes are never
+        spliced across an error. Gives up after `retries` consecutive restarts without progress. If the caller stops
+        iterating early, the running stream is aborted.
+        """
+        if count < 1 or start < 0 or start + count > TOTAL_PAGES:
+            raise ValueError(f"page range {start}+{count} outside 0..{TOTAL_PAGES}")
+        end = start + count
+        nxt = start  # first page not yet yielded
+        failures = 0
+        last_err: Exception | None = None
+        streaming = False
+        try:
+            while nxt < end:
+                if failures > self.retries:
+                    raise TransportError(
+                        f"READ_PAGES: no progress at page {nxt} after {failures} attempts: {last_err}"
+                    )
+                seq = self._next_seq()
+                self.t.write(encode_request(Cmd.READ_PAGES, seq, struct.pack("<II", nxt, end - nxt)))
+                streaming = True
+                try:
+                    while True:
+                        resp = self.read_response(time.monotonic() + self.timeout)
+                        if resp.seq != seq or (resp.cmd & ~END_FLAG) != Cmd.READ_PAGES:
+                            continue  # stale frame, or ERR_BUSY for someone else's request
+                        if resp.is_end:
+                            streaming = False
+                            self._check_end(resp, nxt, end)
+                            break
+                        if resp.status == Status.ERR_CRC:
+                            streaming = False  # the request was corrupted: nothing started
+                            raise FrameError("device reported request CRC error")
+                        if resp.status == Status.ERR_BUSY:
+                            # another stream is still running (e.g. left over from an earlier process): resync aborts
+                            # it, then retry
+                            raise FrameError("device busy with another stream")
+                        if resp.page == PAGE_NONE and resp.status != Status.OK:
+                            streaming = False  # rejected request: a single status frame, no stream
+                            raise DeviceError(Cmd.READ_PAGES, resp.status)
+                        if resp.page != nxt:
+                            raise FrameError(f"page {resp.page} out of order, expected {nxt}")
+                        if resp.status == Status.OK and len(resp.payload) == PAGE_LEN:
+                            data = resp.payload
+                        elif resp.status == Status.ERR_RB_TIMEOUT and not resp.payload:
+                            data = None
+                        else:
+                            raise FrameError(f"bad page frame: status {resp.status}, {len(resp.payload)} bytes")
+                        nxt += 1
+                        failures = 0
+                        yield resp.page, data
+                except (FrameError, TransportError) as e:
+                    last_err = e
+                    failures += 1
+                    if streaming:
+                        self.resync()
+                        streaming = False
+        finally:
+            if streaming:  # the caller stopped early (or an unexpected error): stop the device's stream
+                self.resync()
+
+    @staticmethod
+    def _check_end(resp: Response, nxt: int, end: int) -> None:
+        if len(resp.payload) != END_LEN:
+            raise FrameError(f"end frame payload is {len(resp.payload)} bytes, expected {END_LEN}")
+        if resp.status != Status.OK:
+            raise FrameError(f"stream ended early: {_name(Status, resp.status)} at page {resp.page}")
+        if resp.page != nxt or nxt != end:
+            raise FrameError(f"end frame at page {resp.page}, expected {end} (next unread {nxt})")
