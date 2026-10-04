@@ -5,6 +5,7 @@
 #include "crc32.h"
 #include "frame.h"
 #include "hardware/clocks.h"
+#include "nand_ops.h"
 #include "pico/bootrom.h"
 #include "pico/time.h"
 #include "tusb.h"
@@ -113,6 +114,48 @@ static void cmd_set_timing(const proto_req_t *r) {
     send_resp(r->cmd, r->seq, PROTO_ST_OK, PROTO_PAGE_NONE, buf, sizeof buf);
 }
 
+static void cmd_reset(const proto_req_t *r) {
+    if (r->arg_len != 0) {
+        send_status(r, PROTO_ST_ERR_BAD_ARGS);
+        return;
+    }
+    uint32_t busy_cycles = 0;
+    uint8_t st = nand_reset(&busy_cycles);
+    if (st != PROTO_ST_OK) {
+        send_status(r, st);
+        return;
+    }
+    uint8_t buf[4];
+    put_le32(buf, (uint32_t)((uint64_t)busy_cycles * 1000000000u / clock_get_hz(clk_sys)));
+    send_resp(r->cmd, r->seq, PROTO_ST_OK, PROTO_PAGE_NONE, buf, sizeof buf);
+}
+
+static void cmd_read_id(const proto_req_t *r) {
+    uint8_t addr = 0x00, n = 5; /* no args: manufacturer + device ID (§3.16) */
+    if (r->arg_len == 2) {
+        addr = r->args[0];
+        n = r->args[1];
+    }
+    /* 00h = ID (§3.16), 20h = ONFI signature (§3.18). Nothing else (PROPOSAL §1 item 8). */
+    if ((r->arg_len != 0 && r->arg_len != 2) || (addr != 0x00 && addr != 0x20) || n < 1 || n > 8) {
+        send_status(r, PROTO_ST_ERR_BAD_ARGS);
+        return;
+    }
+    uint8_t buf[8];
+    uint8_t st = nand_read_id(addr, buf, n);
+    send_resp(r->cmd, r->seq, st, PROTO_PAGE_NONE, buf, st == PROTO_ST_OK ? n : 0);
+}
+
+static void cmd_read_status(const proto_req_t *r) {
+    if (r->arg_len != 0) {
+        send_status(r, PROTO_ST_ERR_BAD_ARGS);
+        return;
+    }
+    uint8_t sr;
+    uint8_t st = nand_read_status(&sr);
+    send_resp(r->cmd, r->seq, st, PROTO_PAGE_NONE, &sr, st == PROTO_ST_OK ? 1 : 0);
+}
+
 static void cmd_abort(const proto_req_t *r) {
     /* No stream is running outside READ_PAGES, so ABORT here is a no-op. */
     send_status(r, r->arg_len ? PROTO_ST_ERR_BAD_ARGS : PROTO_ST_OK);
@@ -126,11 +169,20 @@ static void dispatch(const proto_req_t *r) {
     case PROTO_CMD_SET_TIMING:
         cmd_set_timing(r);
         break;
+    case PROTO_CMD_RESET:
+        cmd_reset(r);
+        break;
+    case PROTO_CMD_READ_ID:
+        cmd_read_id(r);
+        break;
+    case PROTO_CMD_READ_STATUS:
+        cmd_read_status(r);
+        break;
     case PROTO_CMD_ABORT:
         cmd_abort(r);
         break;
     default:
-        /* Includes NAND commands not implemented yet in this milestone (M0). */
+        /* Includes commands not implemented yet at this milestone (M2): BUS_TEST, READ_PARAM, READ_PAGES. */
         send_status(r, PROTO_ST_ERR_UNKNOWN_CMD);
         break;
     }

@@ -1,6 +1,6 @@
 /*
  * Pico NAND Tool firmware. Current scope: read-only NAND dumper (docs/SPEC.md).
- * M0: USB CDC transport + PING / SET_TIMING / ABORT; NAND lines held in their safe idle state.
+ * M2: USB CDC transport, PING / SET_TIMING / ABORT, and the NAND commands RESET / READ_ID / READ_STATUS.
  */
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
@@ -22,6 +22,7 @@ int main(void) {
 #endif
 
     protocol_init();
+    nand_bus_use_timing(protocol_timing());
     tusb_init();
 
     for (;;) {

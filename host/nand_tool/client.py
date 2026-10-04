@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import struct
 import time
 
 from .errors import FrameError, NandToolError, TransportError
@@ -157,3 +158,24 @@ class Client:
 
     def get_timing(self) -> tuple[TimingMode, Timing]:
         return self.set_timing(TimingMode.QUERY)
+
+    def reset(self) -> int:
+        """FFh and wait ready. Returns the measured R/B# busy time in ns (0 = R/B# was never seen low)."""
+        payload = self.call(Cmd.RESET)
+        if len(payload) != 4:
+            raise FrameError(f"malformed RESET reply ({len(payload)} bytes)")
+        return struct.unpack("<I", payload)[0]
+
+    def read_id(self, addr: int = 0x00, n: int = 5) -> bytes:
+        """90h + addr (00h = ID, 20h = ONFI signature), n bytes (1..8)."""
+        args = b"" if (addr, n) == (0x00, 5) else bytes((addr, n))
+        payload = self.call(Cmd.READ_ID, args)
+        if len(payload) != n:
+            raise FrameError(f"READ_ID returned {len(payload)} bytes, expected {n}")
+        return payload
+
+    def read_status(self) -> int:
+        payload = self.call(Cmd.READ_STATUS)
+        if len(payload) != 1:
+            raise FrameError(f"malformed READ_STATUS reply ({len(payload)} bytes)")
+        return payload[0]

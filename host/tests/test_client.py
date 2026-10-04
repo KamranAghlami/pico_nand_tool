@@ -54,10 +54,51 @@ def test_bad_args(client):
     assert e.value.status == Status.ERR_BAD_ARGS
 
 
-def test_unimplemented_command_at_m0(client):
+def test_unimplemented_command_at_m2(client):
+    for cmd in (Cmd.BUS_TEST, Cmd.READ_PARAM, Cmd.READ_PAGES):
+        with pytest.raises(DeviceError) as e:
+            client.call(cmd)
+        assert e.value.status == Status.ERR_UNKNOWN_CMD
+
+
+def test_reset_and_status(client, dev):
+    assert client.reset() == 3200
+    assert client.read_status() == 0x60  # §3.12, WP# low
+
+
+def test_reset_rb_timeout():
+    c = Client(FakeDevice(rb_stuck_low=True), timeout=0.05, quiet_s=0.005)
     with pytest.raises(DeviceError) as e:
-        client.call(Cmd.READ_ID)
-    assert e.value.status == Status.ERR_UNKNOWN_CMD
+        c.reset()
+    assert e.value.status == Status.ERR_RB_TIMEOUT
+
+
+def test_read_id(client, dev):
+    assert client.read_id() == bytes.fromhex("01DA909544")
+    assert dev.requests[-1][2] == b""  # default form: no args (00h, 5)
+    assert client.read_id(0x20, 4) == b"ONFI"
+    assert dev.requests[-1][2] == b"\x20\x04"
+    assert client.read_id(0x00, 2) == b"\x01\xda"
+
+
+@pytest.mark.parametrize("args", [b"\x10\x05", b"\x00\x00", b"\x00\x09", b"\x00", b"\x00\x05\x00"])
+def test_read_id_bad_args(client, args):
+    with pytest.raises(DeviceError) as e:
+        client.call(Cmd.READ_ID, args)
+    assert e.value.status == Status.ERR_BAD_ARGS
+
+
+@pytest.mark.parametrize("cmd", [Cmd.RESET, Cmd.READ_STATUS])
+def test_nand_commands_take_no_args(client, cmd):
+    with pytest.raises(DeviceError) as e:
+        client.call(cmd, b"\x00")
+    assert e.value.status == Status.ERR_BAD_ARGS
+
+
+def test_read_id_wrong_length_is_frame_error(client, dev, monkeypatch):
+    monkeypatch.setattr(dev, "_execute", lambda cmd, seq, args: encode_response(cmd, seq, Status.OK, payload=b"\x01"))
+    with pytest.raises(FrameError, match="READ_ID"):
+        client.read_id()
 
 
 def test_abort_without_stream(client):

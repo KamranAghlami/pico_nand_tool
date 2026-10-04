@@ -162,6 +162,8 @@ Exit status: 0 = success, 1 = error (printed as `error: …`), 130 = interrupted
 | `nandtool timing` | Shows the active bus timing: every delay in cycles and ns, and the R/B# timeout. |
 | `nandtool timing --slow` | Selects the SLOW preset (1 µs per bus phase), so a 24 MHz logic analyzer can resolve every edge. |
 | `nandtool timing --default` | Back to the DEFAULT preset (≥ 2× every datasheet minimum). |
+| `nandtool id [--repeat N] [--onfi]` | Reads the chip ID (`90h 00h`) and checks it against `01 DA 90 95 44`; decodes bytes 3–5. `--repeat N` reads it N times and checks every read is identical. `--onfi` also reads the ONFI signature (`90h 20h`). Exit 1 on any mismatch. |
+| `nandtool status [--reset]` | Reads and decodes the status register (`00h 70h`). `--reset` issues `FFh` first and shows the R/B# busy time; exit 1 unless the status is then `60h`. Always exit 1 if the chip reports WP# high. |
 
 The timing setting lives in the Pico's RAM. It resets to DEFAULT when the Pico reboots.
 
@@ -172,6 +174,19 @@ $ nandtool ping
 firmware : pico-nand-tool 0.1.0 (a749da2)
 version  : 0.1.0, protocol v1
 clk_sys  : 125.000 MHz
+
+$ nandtool status --reset
+reset    : OK, R/B# busy … us
+status   : 60h (as expected: 60h after reset)
+  bit 7 write protect : protected (WP# low)
+  bit 6 ready/busy    : ready
+  ...
+
+$ nandtool id --repeat 1000
+ID       : 01 DA 90 95 44
+...
+repeat   : 1000/1000 reads identical
+expected : 01 DA 90 95 44 (S34ML02G1 x8): match
 ```
 
 ### Planned commands, by milestone
@@ -179,7 +194,6 @@ clk_sys  : 125.000 MHz
 | Milestone | Commands |
 |---|---|
 | M1 | `bus-test`: toggles every control and data line in a fixed order (CE# stays high, so it is chip-safe) |
-| M2 | `status`, `id` (expects `01 DA 90 95 44`) |
 | M3 | `param`: reads and checks all 3 ONFI parameter-page copies (CRC `3B C5`), decodes the geometry |
 | M4 | `read --page N [--repeat K]` |
 | M5 | `dump --out FILE [--start N --count M] [--resume] [--force]`, `compare A B`, `reconcile A B --out FINAL` |

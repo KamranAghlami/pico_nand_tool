@@ -31,6 +31,8 @@ add_executable(pico_nand_tool
     src/crc32.c
     src/timing.c
     src/nand_bus.c
+    src/nand_ops.c
+    src/fault.c
     src/usb_descriptors.c
 )
 
@@ -41,6 +43,8 @@ target_compile_definitions(pico_nand_tool PRIVATE
     FW_VERSION_MAJOR=${FW_VERSION_MAJOR}
     FW_VERSION_MINOR=${FW_VERSION_MINOR}
     FW_VERSION_PATCH=${FW_VERSION_PATCH}
+    # Every panic() -> fault.c: park the NAND bus and halt.
+    PICO_PANIC_FUNCTION=nand_tool_panic
 )
 
 target_compile_options(pico_nand_tool PRIVATE -Wall -Wextra)
@@ -51,6 +55,8 @@ target_link_libraries(pico_nand_tool
     pico_bootrom
     hardware_gpio
     hardware_clocks
+    hardware_sync
+    hardware_timer
     tinyusb_device
 )
 

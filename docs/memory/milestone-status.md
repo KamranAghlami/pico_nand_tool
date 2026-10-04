@@ -23,6 +23,17 @@ metadata:
   handler went with it; plan to bring back only "park the NAND bus on panic" at M2.
 - 2026-10-01: The user verified on macOS: the README macOS build/flash/install steps, and the 1200-baud BOOTSEL
   reboot (`stty -f /dev/cu.usbmodem* 1200`). The user works on both macOS and WSL2 (usbipd).
+- 2026-10-04: Firmware 39df358 (WP# on GP13) built on WSL2 and re-ran the M0 checks on hardware (ping, timing,
+  50/50 pings). The WSL toolchain lives at ~/pico-sdk. That machine's SDK-built picotool has no USB support, so flash
+  by mounting the RPI-RP2 drive (/dev/disk/by-label/RPI-RP2) and copying the .uf2.
+- 2026-10-04: **M1 skipped by the user**: no logic analyzer. The user soldered the NAND and asked to go straight
+  to "does the chip respond". BUS_TEST is still unimplemented.
+- 2026-10-04: M2 code written (RESET / READ_ID / READ_STATUS, `nandtool id`, `nandtool status`). On hardware, run in
+  the session: `status --reset` → 60h (WP# low, ready); `id --onfi` → 01 DA 90 95 44 + "ONFI"; `id --repeat 1000`
+  → 1000/1000 identical. **Open issue:** RESET always reports R/B# never seen low (busy_ns = 0), even right after
+  Read ID. Either tRST from idle is shorter than tWB + poll latency (~0.3 µs), or R/B# (ball C8 → GP14) is open and
+  the 10k pull-up holds it high. M3 (READ_PARAM, tR ≈ 25 µs) should tell which.
+- 2026-10-04: **M2 APPROVED by the user** on that output (R/B# question still open), committed; M3 next.
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after

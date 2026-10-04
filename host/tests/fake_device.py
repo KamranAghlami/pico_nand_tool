@@ -1,8 +1,12 @@
 """Fake Pico NAND Tool: simulates the firmware's wire protocol in-process and implements the Transport interface.
 
-Mirrors the firmware as of milestone M0: PING, SET_TIMING and ABORT are implemented, and every other command
-answers ERR_UNKNOWN_CMD, exactly like the real M0 firmware. It grows with the firmware, milestone by milestone
-(the NAND image, bitflips and READ_PAGES streaming come at M2-M5).
+Mirrors the firmware as of milestone M2: PING, SET_TIMING, ABORT, RESET, READ_ID and READ_STATUS are implemented,
+and every other command answers ERR_UNKNOWN_CMD, exactly like the real M2 firmware. It grows with the firmware,
+milestone by milestone (the parameter page, NAND image, bitflips and READ_PAGES streaming come at M3-M5).
+
+The simulated chip is an S34ML02G100 with WP# low. Hardware faults: chip_id (e.g. all FFh = no chip), wp_high
+(SR bit 7 set), rb_stuck_low (RESET times out), rb_never_low (RESET reports busy_ns = 0), id_glitches (a list of
+IDs returned by the next READ_IDs at addr 00h).
 
 Transport faults can be injected with inject(). Each queued fault applies to the next non-ABORT request received
 (ABORTs are the client's own recovery traffic, docs/PROTOCOL.md "Host recovery rule").
@@ -47,6 +51,12 @@ class FakeDevice:
         fw_version: tuple[int, int, int] = (0, 1, 0),
         version_string: str = "pico-nand-tool 0.1.0 (fake)",
         proto_version: int = PROTO_VERSION,
+        chip_id: bytes = bytes.fromhex("01DA909544"),
+        onfi: bytes = b"ONFI",
+        wp_high: bool = False,
+        rb_stuck_low: bool = False,
+        rb_never_low: bool = False,
+        reset_busy_ns: int = 3200,
     ):
         self.clk_hz = clk_hz
         self.fw_version = fw_version
@@ -56,6 +66,14 @@ class FakeDevice:
         self.timing_mode = TimingMode.DEFAULT
         self.requests: list[tuple[int, int, bytes]] = []  # (cmd, seq, args) of every CRC-valid request
         self.closed = False
+        self.chip_id = chip_id
+        self.onfi = onfi
+        self.wp_high = wp_high
+        self.rb_stuck_low = rb_stuck_low
+        self.rb_never_low = rb_never_low
+        self.reset_busy_ns = reset_busy_ns
+        self.id_glitches: list[bytes] = []
+        self.sr = self._sr_after_reset()  # power-on state equals the reset state (§3.12)
         self._rx = bytearray()
         self._tx = bytearray()
         self._faults: list[Fault] = []
@@ -79,6 +97,20 @@ class FakeDevice:
 
     def close(self) -> None:
         self.closed = True
+
+    # ---- chip model -----------------------------------------------------------------------------------------
+
+    def _sr_after_reset(self) -> int:
+        return 0xE0 if self.wp_high else 0x60  # §3.12
+
+    def _id_bytes(self, addr: int, n: int) -> bytes:
+        if addr == 0x20:
+            base = self.onfi  # §3.18: beyond 4 bytes is indeterminate; the fake repeats the signature
+        elif self.id_glitches:
+            base = self.id_glitches.pop(0)
+        else:
+            base = self.chip_id
+        return (base * (n // len(base) + 1))[:n]
 
     # ---- firmware model ----------------------------------------------------------------------------------
 
@@ -156,6 +188,27 @@ class FakeDevice:
             elif not (len(args) == 1 and mode == TimingMode.QUERY):
                 return reply(Status.ERR_BAD_ARGS)
             return reply(Status.OK, bytes((self.timing_mode,)) + self.timing.pack())
+
+        if cmd == Cmd.RESET:
+            if args:
+                return reply(Status.ERR_BAD_ARGS)
+            if self.rb_stuck_low:
+                return reply(Status.ERR_RB_TIMEOUT)
+            self.sr = self._sr_after_reset()
+            return reply(Status.OK, struct.pack("<I", 0 if self.rb_never_low else self.reset_busy_ns))
+
+        if cmd == Cmd.READ_ID:
+            if len(args) not in (0, 2):
+                return reply(Status.ERR_BAD_ARGS)
+            addr, n = (args[0], args[1]) if args else (0x00, 5)
+            if addr not in (0x00, 0x20) or not 1 <= n <= 8:
+                return reply(Status.ERR_BAD_ARGS)
+            return reply(Status.OK, self._id_bytes(addr, n))
+
+        if cmd == Cmd.READ_STATUS:
+            if args:
+                return reply(Status.ERR_BAD_ARGS)
+            return reply(Status.OK, bytes((self.sr,)))
 
         if cmd == Cmd.ABORT:
             return reply(Status.ERR_BAD_ARGS if args else Status.OK)
