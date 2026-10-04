@@ -97,7 +97,8 @@ def cmd_status(client: Client, args: argparse.Namespace) -> int:
         if busy_ns:
             print(f"reset    : OK, R/B# busy {busy_ns / 1000:.2f} us")
         else:
-            print("reset    : OK, but R/B# was never seen low (check R/B#, ball C8)")
+            # Normal on this chip: a reset of an idle chip ends before the first R/B# sample (tWB + poll latency).
+            print("reset    : OK (finished before the first R/B# sample)")
     sr = client.read_status()
     note = ""
     if args.reset:

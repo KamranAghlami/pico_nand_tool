@@ -94,7 +94,7 @@ def test_status_after_reset(capsys):
 
 def test_status_rb_never_low(capsys):
     assert run(FakeDevice(rb_never_low=True), "status", "--reset") == 0
-    assert "never seen low" in capsys.readouterr().out
+    assert "finished before the first R/B# sample" in capsys.readouterr().out
 
 
 def test_status_wp_high_is_an_error(capsys):
