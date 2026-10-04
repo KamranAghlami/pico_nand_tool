@@ -261,7 +261,8 @@ static void dispatch(const proto_req_t *r) {
         cmd_abort(r);
         break;
     default:
-        /* Includes BUS_TEST: M1 was dropped by the user (no logic analyzer; the chip-level checks covered the wiring). */
+        /* Includes BUS_TEST: M1 was dropped by the user (no logic analyzer; the chip-level checks covered the
+         * wiring). */
         send_status(r, PROTO_ST_ERR_UNKNOWN_CMD);
         break;
     }
