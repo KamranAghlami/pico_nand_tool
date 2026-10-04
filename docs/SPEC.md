@@ -15,7 +15,9 @@ The datasheet is in `docs/` (S34ML01G1/S34ML02G1/S34ML04G1, Rev *W). **Treat it 
 ## Hard safety constraints (non-negotiable)
 
 - **This tool must never program or erase the chip.** The only NAND commands the firmware may ever issue are: `FFh` (Reset), `90h` (Read ID), `ECh` (Read Parameter Page), `00h`/`30h` (Page Read), `70h` (Read Status). Enforce this in code: the command-issue function takes an enum of these values only, with a compile-time/static check. Do not implement `80h`, `10h`, `85h`, `60h`, `D0h` or any other opcode, even behind a flag.
-- WP# is hardware-tied to GND (see pin map). Firmware must never drive it.
+- WP# is wired to GP13 with a 10k external pull-down to GND (see pin map), so it is held low (write-protected) at all
+  times. In the read-only scope the firmware drives GP13 **low** as the first thing it does at boot and must never
+  drive it high or pull it up. Driving WP# high is reserved for a future write mode, which needs a SPEC change first.
 - The dump is the only copy of the data. The host tool must never overwrite an existing output file without an explicit flag.
 
 ## Hardware
@@ -54,8 +56,8 @@ RP2040 notes:
 | GP10 | WE# | C7 | 10k external pull-up to 3V3 |
 | GP11 | RE# | D4 | 10k external pull-up to 3V3 |
 | GP12 | CE# | C6 | 10k external pull-up to 3V3 |
+| GP13 | WP# | C3 | **10k external pull-down to GND**. Firmware drives it low at boot and never high (read-only scope) |
 | GP14 | R/B# | C8 | Input; open-drain, 10k external pull-up to 3V3 |
-| — | WP# | C3 | **Hard-wired to GND** (not connected to Pico) |
 | 3V3(OUT) pin 36 | VCC | D3, G4, H8, J6 | 100 nF + 10 µF at socket |
 | GND | VSS | C5, F7, K3, K8 | |
 

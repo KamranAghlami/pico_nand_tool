@@ -31,6 +31,8 @@ I checked every chip fact and timing in `SPEC.md` against the datasheet. **Nothi
 
 1. **Expected status after RESET is `60h`, not `E0h`** (§3.12). WP# is grounded, so SR bit 7 (write-protect) reads `0` = "protected".
    The host tool decodes this. **If it ever reads `E0h`, WP# is not really grounded: stop and check the hardware.**
+   *(Amended 2026-10-04: WP# now goes to GP13 with a 10 kΩ pull-down to GND, and the firmware drives it low at boot.
+   WP# is still low, so `60h` is still expected.)*
    This gives M2 a free hardware safety check.
 2. **Read ID followed by Read Status needs a dummy `00h`** in between (§3.16 note). `00h` is already on the allowed opcode
    list. Proposal: `READ_STATUS` always issues `00h` and then `70h`. This means no hidden "what did we do last" state, and
@@ -241,7 +243,8 @@ typedef enum {
 - `nand_bus_cmd_latch_()` also runs a runtime `switch` allow-list and calls `panic()` **before** touching the bus if
   the opcode is anything else (defense in depth).
 - There is **no data-input function** at all. No code path toggles WE# with CLE = ALE = 0.
-- WP# has no GPIO, no define, no code.
+- WP# has no define and no code. *(Amended 2026-10-04: it is wired to GP13 with a 10 kΩ pull-down. The firmware
+  drives it low in `nand_bus_init()` and never high; `check_wp.sh` rejects any other use of `PIN_WP`/`MASK_WP`.)*
 
 ### 3.8 BUS_TEST sequence (chip-safe)
 
@@ -327,7 +330,7 @@ not needed for the 300 KB/s target.
   `READ_ID` between chunks, which catches the chip losing contact in the clamshell socket.
 - A page that still fails after the retry limit (default 5) **aborts the dump**. It is resumable, and nothing is ever
   zero-filled. Such failures are systemic (wiring, socket), not data-dependent.
-- `status` decodes SR bits and **warns loudly if bit 7 = 1** (WP# not grounded).
+- `status` decodes SR bits and **warns loudly if bit 7 = 1** (WP# not low).
 - `id` also decodes bytes 3–5 (Tables 16, 3.2, 3.3): SLC, 2 KB page, 128 KB block, 2 planes × 1 Gb, ×8, 25 ns.
 
 ---

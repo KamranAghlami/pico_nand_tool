@@ -7,9 +7,9 @@ SRC := ../src
 OUT ?= build
 BIN := $(abspath $(OUT))
 
-.PHONY: check unit gate clean
+.PHONY: check unit gate wp clean
 
-check: unit gate
+check: unit gate wp
 
 unit: $(BIN)/test_host
 	$(BIN)/test_host
@@ -36,6 +36,16 @@ gate:
 	@if ./check_gate_calls.sh $(BIN)/badsrc > /dev/null; then \
 		echo "FAIL: check_gate_calls.sh missed a direct call"; exit 1; fi
 	@echo "opcode gate: OK (allowed opcodes compile; 0x80, non-constant opcodes and direct latch calls are rejected)"
+
+# WP# may only be driven low: PIN_WP/MASK_WP outside pins.h and the init in nand_bus.c is rejected, and the checker
+# itself is proven to catch a gpio_set_mask(MASK_WP).
+wp:
+	@./check_wp.sh $(SRC)
+	@rm -rf $(BIN)/wpsrc && mkdir -p $(BIN)/wpsrc && cp $(SRC)/*.h $(SRC)/*.c $(BIN)/wpsrc/ && \
+		printf '#include "pins.h"\nvoid sneaky(void) { gpio_set_mask(MASK_WP); }\n' > $(BIN)/wpsrc/sneaky.c
+	@if ./check_wp.sh $(BIN)/wpsrc > /dev/null; then \
+		echo "FAIL: check_wp.sh missed a WP# write"; exit 1; fi
+	@echo "WP# guard: OK (WP# is only driven low at init; any other use is rejected)"
 
 clean:
 	rm -rf $(BIN)

@@ -23,7 +23,12 @@ themselves. Never scaffold, stub or "prepare" write paths in advance.
   names it.
   Never write code for `80h 10h 85h 60h D0h` or any other opcode, and never add a data-input (WE# with CLE=ALE=0)
   path.
-- WP# is hard-wired to GND. There is no GPIO for it and there must never be one.
+- WP# (ball C3) is wired to **GP13** with a 10k external pull-down to GND, which holds it low (write-protected). The
+  firmware drives it **low only**: first thing in `nand_bus_init()`, it initialises the pin, clears the latch and
+  enables the output. Nothing may ever drive it high or pull it up. `PIN_WP`/`MASK_WP` may appear only in `pins.h`
+  and those three lines; `make -C firmware/tests check` (`check_wp.sh`) fails the build otherwise, and a
+  `_Static_assert` keeps `MASK_WP` out of every bus mask. Driving WP# high is for a future write mode, and that only
+  happens after the user changes `docs/SPEC.md`.
 - The dump is the only copy of the data. The host tool never overwrites an existing output file without `--force`.
   It never zero-fills or "guesses" pages; unreadable or unstable pages are flagged, not fixed silently.
 - Never claim a hardware milestone (M0–M6) passed without the user's pasted output. At each hardware milestone, stop
@@ -45,8 +50,8 @@ themselves. Never scaffold, stub or "prepare" write paths in advance.
 
 - Use SIO mask ops only (`gpio_set_mask`, `gpio_clr_mask`, `gpio_put_masked`, `gpio_set_dir_*_masked`), never
   per-pin loops. The data bus is GP0–GP7 and is read with `gpio_get_all() & 0xFF`.
-- Init order: clear the RP2040 default pull-downs, set CE#/WE#/RE# **high in the output latch first**, then enable
-  them as outputs.
+- Init order: drive WP# (GP13) low, clear the RP2040 default pull-downs, set CE#/WE#/RE# **high in the output latch
+  first**, then enable them as outputs.
 - The data bus is an output only during cmd/addr cycles. Switch it to input before the first RE#↓ (respect tWHR),
   and back to output only after tRHW.
 - All delays come from the single runtime `timing_t` (clk_sys cycles, 8 ns at 125 MHz). There are DEFAULT and SLOW

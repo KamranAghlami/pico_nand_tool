@@ -9,7 +9,8 @@ tool. The host tool verifies, retries, compares and reconciles multi-pass dumps.
 - Design record (approved): [`docs/PROPOSAL.md`](docs/PROPOSAL.md)
 
 In its current scope the firmware never programs or erases the chip. Only Reset, Read ID, Read Parameter Page, Page
-Read and Read Status can reach the bus, and WP# is hard-wired to GND.
+Read and Read Status can reach the bus, and WP# is held low by a pull-down and by the firmware, which never drives it
+high.
 
 **Status:** milestone M0 (toolchain + USB) has passed on hardware. M1 (bus test) is next. The firmware does not
 talk to the NAND chip yet; see [Usage](#usage) for what works today.
@@ -21,6 +22,7 @@ talk to the NAND chip yet; see [Usage](#usage) for what works today.
 - Raspberry Pi Pico (RP2040). The firmware targets the plain Pico, not the Pico W.
 - BGA63 (9 × 11 mm) clamshell socket holding the S34ML02G100BHI00.
 - 4 × 10 kΩ pull-up resistors to 3V3: WE#, RE#, CE#, R/B#.
+- 1 × 10 kΩ pull-down resistor to GND: WP#.
 - 100 nF + 10 µF decoupling capacitors at the socket, VCC to VSS.
 
 ### Wiring (Pico → NAND BGA63 ball)
@@ -42,16 +44,17 @@ The pin map lives in [`firmware/src/pins.h`](firmware/src/pins.h). Change it the
 | GP10 | 14 | WE# | C7 | 10 kΩ pull-up to 3V3 |
 | GP11 | 15 | RE# | D4 | 10 kΩ pull-up to 3V3 |
 | GP12 | 16 | CE# | C6 | 10 kΩ pull-up to 3V3 |
+| GP13 | 17 | **WP#** | C3 | **10 kΩ pull-down to GND**. The firmware drives it low, never high. |
 | GP14 | 19 | R/B# | C8 | open drain, 10 kΩ pull-up to 3V3 |
-| — | — | **WP#** | C3 | **tie to GND**. Never connect it to the Pico. |
 | 3V3(OUT) | 36 | VCC | D3, G4, H8, J6 | 100 nF + 10 µF at the socket |
 | GND | 3, 8, 13, … | VSS | C5, F7, K3, K8 | |
 
 - I/O0–I/O7 must stay on 8 consecutive GPIOs, so that one read of the GPIO register gives the data byte.
 - Datasheet Fig. 3 says balls D3, G4 (VCC) and F7 (VSS) "might not be bonded internally". Connect them anyway, but
   make sure the guaranteed balls, **H8 and J6 (VCC)** and **C5, K3 and K8 (VSS)**, are solid.
-- With WP# grounded, the chip's status register reads `60h` after a reset. `E0h` would mean WP# is not really
-  grounded: stop and check the wiring.
+- WP# is on a GPIO for a future write mode. For now it is always low (write-protected): the 10 kΩ pull-down holds it
+  low before the firmware starts, and the firmware drives GP13 low at boot. With WP# low, the chip's status register
+  reads `60h` after a reset. `E0h` would mean WP# is not really low: stop and check the pull-down and wiring.
 
 ## Build the firmware
 

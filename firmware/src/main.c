@@ -10,7 +10,7 @@
 #include "tusb.h"
 
 int main(void) {
-    /* First: park the NAND control lines deasserted (CE#/WE#/RE# high, CLE/ALE low). */
+    /* First: WP# low (write protected), then park the NAND control lines deasserted (CE#/WE#/RE# high, CLE/ALE low). */
     nand_bus_init();
 
     /* Fixed 125 MHz clk_sys: timing_t defaults assume 8 ns/cycle (docs/PROTOCOL.md). */

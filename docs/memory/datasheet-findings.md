@@ -7,8 +7,8 @@ metadata:
 
 Verified against datasheet Rev \*W on 2026-09-30. SPEC.md has no conflicts with the datasheet.
 
-- The status register after RESET is **`60h`** because WP# is grounded (§3.12). `E0h` means WP# is not grounded:
-  stop and check the hardware.
+- The status register after RESET is **`60h`** because WP# is low (§3.12). `E0h` means WP# is not low: stop and
+  check the hardware. (Since 2026-10-04 WP# goes to GP13 with a 10k pull-down, and the firmware drives it low.)
 - Read ID → Read Status needs a dummy `00h` first (§3.16 note).
 - Power-on: the chip is busy for ≤5 ms and accepts only `70h` (§4.1). Wait for R/B# (10 ms timeout) before `FFh`.
 - tRST is 5/10/500 µs from ready/read/program busy (Table 20).
