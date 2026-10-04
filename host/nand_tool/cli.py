@@ -1,5 +1,5 @@
-"""`nandtool` command line. M5 scope: ping, timing, id, status, param, read, dump, compare, reconcile. Further
-subcommands arrive with their milestones (docs/SPEC.md)."""
+"""`nandtool` command line: ping, timing, id, status, param, read, dump, compare, reconcile, split, badblocks
+(docs/SPEC.md). bus-test (M1) is not implemented: M1 was skipped."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from .geometry import (
     decode_status,
 )
 from .onfi import PARAM_PAGE_LEN, ParamPage, split_copies
+from .postproc import MARKER_OFFSET, scan_bad_blocks, split
 from .reconcile import DEFAULT_READS, default_min_agree, reconcile
 from .protocol import PROTO_VERSION, TimingMode
 from .transport import Transport, open_transport
@@ -350,6 +351,45 @@ def cmd_reconcile(client: Client, args: argparse.Namespace) -> int:
     return 1 if r.unstable else 0
 
 
+def cmd_split(client: Client | None, args: argparse.Namespace) -> int:
+    image = Path(args.image)
+    outdir = Path(args.outdir) if args.outdir else image.parent
+    data = Path(args.data) if args.data else outdir / "data.bin"
+    oob = Path(args.oob) if args.oob else outdir / "oob.bin"
+    n = split(image, data, oob, force=args.force)
+    print(f"pages    : {n}")
+    print(f"data     : {data} ({n * PAGE_DATA} bytes, {PAGE_DATA} per page)")
+    print(f"oob      : {oob} ({n * (PAGE_SIZE - PAGE_DATA)} bytes, {PAGE_SIZE - PAGE_DATA} per page)")
+    return 0
+
+
+def cmd_badblocks(client: Client | None, args: argparse.Namespace) -> int:
+    image = Path(args.image)
+    start = _start_page(image, args.start)
+    scan = scan_bad_blocks(image, start)
+    if scan.blocks == 0:
+        print("error: the image holds no whole block", file=sys.stderr)
+        return 1
+    last = scan.first_block + scan.blocks - 1
+    print(f"scanned  : blocks {scan.first_block}..{last} ({scan.blocks} blocks); rule: datasheet §9.2, spare byte 0 "
+          f"(offset {MARKER_OFFSET}) of pages 0, 1 and {PAGES_PER_BLOCK - 1} of each block must be FFh")
+    if scan.skipped_pages:
+        print(f"skipped  : {scan.skipped_pages} pages outside whole blocks")
+    for b in scan.bad:
+        marks = ", ".join(f"page {p}: {v:02X}h" for p, v in sorted(b.markers.items()))
+        first = b.block * PAGES_PER_BLOCK
+        print(f"bad      : block {b.block} (pages {first}..{first + PAGES_PER_BLOCK - 1}): {marks}")
+    print(f"result   : {len(scan.bad)} bad block{'s' if len(scan.bad) != 1 else ''}"
+          f"{': ' + ' '.join(str(b.block) for b in scan.bad) if scan.bad else ''}")
+    max_bad = EXPECTED_PARAM["bad_blocks_max"]
+    if scan.first_block == 0 and any(b.block == 0 for b in scan.bad):
+        print("WARNING  : block 0 is guaranteed good (§9.2); its marker is probably the previous system's data")
+    if len(scan.bad) > max_bad:
+        print(f"WARNING  : more than the {max_bad} bad blocks the chip allows (param page bytes 103-104). On a used "
+              "chip the previous system may have written spare byte 0, so these are not all factory marks.")
+    return 0
+
+
 def _positive_int(text: str) -> int:
     n = int(text)
     if n < 1:
@@ -453,6 +493,20 @@ def build_parser() -> argparse.ArgumentParser:
                     "from the sidecars, else 0)")
     sp.add_argument("--force", action="store_true", help="overwrite FINAL and the report")
     sp.set_defaults(func=cmd_reconcile)
+
+    sp = sub.add_parser("split", help="split an image into data.bin (2048 B/page) and oob.bin (64 B/page)")
+    sp.add_argument("image")
+    sp.add_argument("--outdir", metavar="DIR", help="where data.bin and oob.bin go (default: next to IMAGE)")
+    sp.add_argument("--data", metavar="FILE", help="data output (overrides --outdir)")
+    sp.add_argument("--oob", metavar="FILE", help="OOB output (overrides --outdir)")
+    sp.add_argument("--force", action="store_true", help="overwrite existing outputs")
+    sp.set_defaults(func=cmd_split, needs_device=False)
+
+    sp = sub.add_parser("badblocks", help="factory bad-block scan of an image (datasheet §9.2)")
+    sp.add_argument("image")
+    sp.add_argument("--start", type=_page_index, metavar="N", help="chip page of the first image page (default: "
+                    "from the sidecar, else 0)")
+    sp.set_defaults(func=cmd_badblocks, needs_device=False)
     return p
 
 

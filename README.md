@@ -169,6 +169,8 @@ Exit status: 0 = success, 1 = error (printed as `error: …`), 130 = interrupted
 | `nandtool dump --out FILE [--start N] [--count M] [--resume \| --force] [--retries R]` | Dumps pages in order (2112 B each) to FILE, with a `FILE.meta.json` sidecar (chip ID, range, firmware, timing, sessions, SHA-256). Refuses to start unless the ID is `01 DA 90 95 44`, and re-checks it every 1024 pages. Never overwrites FILE or its sidecar without `--force`. Transport errors are retried. A page with R/B# timeouts is re-read up to R times (default 5); if it still fails, the dump stops there, with nothing filled in. `--resume` continues an interrupted dump of the same range (a torn last page is dropped). Shows progress, throughput and ETA. |
 | `nandtool compare A B [--max-pages N] [--max-bytes N]` | Compares two dumps page by page and lists every differing byte and bit (no device needed). Exit 1 if they differ. |
 | `nandtool reconcile A B --out FINAL [--reads K] [--min-agree M] [--report FILE] [--force]` | Copies the pages A and B agree on. Re-reads every page that differs K times (default 5), sets each bit by majority vote, and writes FINAL plus a JSON report with every non-unanimous bit and its votes. A page where some bit has fewer than M agreeing votes (default 4 of 5) is flagged UNSTABLE (exit 1), never silently "fixed". |
+| `nandtool split IMAGE [--outdir DIR \| --data FILE --oob FILE] [--force]` | Splits an image into `data.bin` (2048 B per page) and `oob.bin` (64 B per page), next to IMAGE by default. Never overwrites without `--force`. |
+| `nandtool badblocks IMAGE [--start N]` | Factory bad-block scan (datasheet §9.2): a block is bad if spare byte 0 of its 1st, 2nd or last page is not FFh. Lists each bad block with the marker values. Warns if block 0 looks bad (it is guaranteed good) or if there are more than 40 (the chip's maximum): on a used chip the previous system may have written spare byte 0. |
 
 The timing setting lives in the Pico's RAM. It resets to DEFAULT when the Pico reboots.
 
@@ -194,12 +196,23 @@ repeat   : 1000/1000 reads identical
 expected : 01 DA 90 95 44 (S34ML02G1 x8): match
 ```
 
-### Planned commands, by milestone
+### Not implemented
 
-| Milestone | Commands |
-|---|---|
-| M1 | `bus-test`: toggles every control and data line in a fixed order (CE# stays high, so it is chip-safe) |
-| M6 | `split IMAGE` (→ `data.bin` + `oob.bin`), `badblocks IMAGE` |
+`bus-test` (milestone M1: toggles every control and data line in a fixed order for a logic analyzer) was skipped,
+because no logic analyzer was available. The chip-level checks (`id --repeat`, `param`, `read --repeat`) covered the
+wiring instead. The firmware answers `BUS_TEST` with `ERR_UNKNOWN_CMD`.
+
+### Typical session
+
+```sh
+nandtool status --reset && nandtool id --repeat 1000 && nandtool param   # chip present, bus clean
+nandtool dump --out pass1.bin
+nandtool dump --out pass2.bin
+nandtool compare pass1.bin pass2.bin
+nandtool reconcile pass1.bin pass2.bin --out final.bin
+nandtool badblocks final.bin
+nandtool split final.bin                                                 # → data.bin, oob.bin
+```
 
 ## Tests
 

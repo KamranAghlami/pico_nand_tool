@@ -53,6 +53,12 @@ metadata:
   differ, `dumps/final.bin` (same SHA). Ctrl-C + `--resume` verified on hardware. The dumps live only in the
   gitignored `dumps/` dir on the WSL machine.
 - 2026-10-04: **M5 APPROVED by the user**; committed and pushed. M6 next.
+- 2026-10-04: M6 code written (postproc.py; `nandtool split`, `nandtool badblocks`). On `dumps/final.bin`, run in
+  the session: badblocks → 0 bad blocks of 2048 (spare byte 0 is FFh on all 131072 pages); split → `dumps/data.bin`
+  (256 MiB) + `dumps/oob.bin` (8 MiB), re-interleaving gives the original SHA-256.
+- 2026-10-04: **M6 APPROVED by the user**; committed and pushed. The user **dropped M1** for good ("we don't need
+  m1, it works"). BUS_TEST stays unimplemented (ERR_UNKNOWN_CMD). SPEC.md still lists M1; it is user-owned, so it
+  was not edited. All milestones are closed.
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after
