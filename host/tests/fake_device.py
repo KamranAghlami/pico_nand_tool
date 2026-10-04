@@ -10,7 +10,8 @@ IDs returned by the next READ_IDs at addr 00h), param (the 768 bytes READ_PARAM 
 reference page, three times).
 
 NAND image: page_data(p) is deterministic synthetic data (every 5th page erased = all FFh). Data faults: flaky_bits
-{page: [(offset, mask), ...]} XORs those bits on every 2nd read of that page; rb_timeouts {page: n} makes the next n
+{page: [(offset, mask), ...]} XORs those bits on the reads of that page where flip_on(page, n) is true (n = 1 for
+the first read; default: every 2nd read); rb_timeouts {page: n} makes the next n
 reads of that page report ERR_RB_TIMEOUT; page_faults {page: Fault} corrupts that page's frame in transit, once.
 
 Transport faults can be injected with inject(). Each queued fault applies to the next non-ABORT request received
@@ -110,6 +111,7 @@ class FakeDevice:
         self.rb_timeouts: dict[int, int] = {}
         self.page_faults: dict[int, Fault] = {}
         self.page_reads: dict[int, int] = {}  # page -> number of times read from the array
+        self.flip_on = lambda page, n: n % 2 == 0
         self._stream: _Stream | None = None
         self.sr = self._sr_after_reset()  # power-on state equals the reset state (§3.12)
         self._rx = bytearray()
@@ -210,7 +212,7 @@ class FakeDevice:
     def read_page(self, page: int) -> bytes:
         n = self.page_reads[page] = self.page_reads.get(page, 0) + 1
         data = bytearray(page_data(page))
-        if n % 2 == 0:
+        if self.flip_on(page, n):
             for offset, mask in self.flaky_bits.get(page, []):
                 data[offset] ^= mask
         return bytes(data)

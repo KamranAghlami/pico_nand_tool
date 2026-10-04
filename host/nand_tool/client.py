@@ -71,6 +71,7 @@ class Client:
         self.resync_max_s = resync_max_s  # give up if the line never goes quiet (not our device / runaway stream)
         # Random start: a leftover reply from an earlier process can't match our first (cmd, seq).
         self._seq = random.randrange(256)
+        self.stream_restarts = 0  # READ_PAGES streams re-issued after a frame error (statistics)
 
     # ---- framing -----------------------------------------------------------------------------------------
 
@@ -252,6 +253,7 @@ class Client:
                 except (FrameError, TransportError) as e:
                     last_err = e
                     failures += 1
+                    self.stream_restarts += 1
                     if streaming:
                         self.resync()
                         streaming = False

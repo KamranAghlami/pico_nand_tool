@@ -241,3 +241,22 @@ def test_read_needs_page_or_block():
         run(FakeDevice(), "read", "--page", "131072")
     with pytest.raises(SystemExit):
         run(FakeDevice(), "read", "--block", "2048")
+
+
+def test_dump_cli(tmp_path, capsys):
+    out = tmp_path / "d.bin"
+    dev = FakeDevice()
+    assert run(dev, "dump", "--out", str(out), "--start", "10", "--count", "30") == 0
+    cap = capsys.readouterr()
+    assert "dump     : pages 10..39" in cap.err and "30/30 pages (100.0%)" in cap.err
+    assert "sha256   :" in cap.out and "0 R/B# re-reads, 0 stream restarts" in cap.out
+    assert out.stat().st_size == 30 * 2112
+    assert run(dev, "dump", "--out", str(out), "--start", "10", "--count", "30") == 1
+    assert "use --resume to continue it or --force" in capsys.readouterr().err
+
+
+def test_dump_cli_resume_and_force_exclusive(tmp_path):
+    import pytest
+
+    with pytest.raises(SystemExit):
+        run(FakeDevice(), "dump", "--out", str(tmp_path / "d.bin"), "--resume", "--force")

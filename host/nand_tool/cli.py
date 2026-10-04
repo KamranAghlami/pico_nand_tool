@@ -1,16 +1,19 @@
-"""`nandtool` command line. M4 scope: ping, timing, id, status, param, read. Further subcommands arrive with their
-milestones (docs/SPEC.md)."""
+"""`nandtool` command line. M5 scope: ping, timing, id, status, param, read, dump, compare, reconcile. Further
+subcommands arrive with their milestones (docs/SPEC.md)."""
 
 from __future__ import annotations
 
 import argparse
 import sys
 import time
+from pathlib import Path
 from collections import Counter
 from collections.abc import Callable
 
 from . import __version__
 from .client import Client
+from .compare import CompareError, diff_pages, page_count
+from .dump import DEFAULT_RETRIES, Progress, dump, load_meta
 from .errors import NandToolError
 from .geometry import (
     EXPECTED_ID,
@@ -18,6 +21,7 @@ from .geometry import (
     ONFI_ADDR,
     ONFI_SIGNATURE,
     PAGE_DATA,
+    PAGE_SIZE,
     PAGES_PER_BLOCK,
     PARAM_CRC_BYTES,
     SR_AFTER_RESET,
@@ -27,6 +31,7 @@ from .geometry import (
     decode_status,
 )
 from .onfi import PARAM_PAGE_LEN, ParamPage, split_copies
+from .reconcile import DEFAULT_READS, default_min_agree, reconcile
 from .protocol import PROTO_VERSION, TimingMode
 from .transport import Transport, open_transport
 
@@ -240,6 +245,111 @@ def cmd_read(client: Client, args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _duration(s: float) -> str:
+    s = int(s)
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+def _print_progress(p: Progress) -> None:
+    eta = _duration(p.eta_s) if p.eta_s is not None else "?"
+    line = (f"  {p.done}/{p.total} pages ({100 * p.done / p.total:5.1f}%)  {p.rate_bps / 1024:6.0f} KiB/s  "
+            f"elapsed {_duration(p.elapsed_s)}  ETA {eta}")
+    if sys.stderr.isatty():
+        print("\r" + line, end="", file=sys.stderr, flush=True)
+    else:
+        print(line, file=sys.stderr, flush=True)
+
+
+def cmd_dump(client: Client, args: argparse.Namespace) -> int:
+    client.retries = max(client.retries, args.retries)
+    out = Path(args.out)
+    count = args.count if args.count is not None else TOTAL_PAGES - args.start
+    print(f"dump     : pages {args.start}..{args.start + count - 1} -> {out}"
+          f"{' (resume)' if args.resume else ''}", file=sys.stderr)
+    try:
+        r = dump(client, out, start=args.start, count=count, resume=args.resume, force=args.force,
+                 retries=args.retries, progress=_print_progress)
+    finally:
+        if sys.stderr.isatty():
+            print(file=sys.stderr)
+    rate = r.pages_read * PAGE_SIZE / r.elapsed_s / 1024 if r.elapsed_s > 0 else 0
+    print(f"file     : {out} ({r.count} pages, {r.count * PAGE_SIZE} bytes)")
+    if r.resumed_at:
+        print(f"resumed  : at page {r.start + r.resumed_at}")
+    print(f"read     : {r.pages_read} pages in {_duration(r.elapsed_s)} ({rate:.0f} KiB/s)")
+    print(f"retries  : {r.rb_retries} R/B# re-reads, {r.stream_restarts} stream restarts after transport errors")
+    print(f"sha256   : {r.sha256}")
+    print(f"sidecar  : {out.name}.meta.json")
+    return 0
+
+
+def _start_page(path: Path, override: int | None) -> int:
+    if override is not None:
+        return override
+    meta = load_meta(path)
+    return meta["start"] if meta else 0
+
+
+def cmd_compare(client: Client | None, args: argparse.Namespace) -> int:
+    a, b = Path(args.a), Path(args.b)
+    try:
+        na, nb = page_count(a), page_count(b)
+    except (CompareError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    start = _start_page(a, args.start)
+    if na != nb:
+        print(f"size     : DIFFERENT, {a} has {na} pages, {b} has {nb}; comparing the first {min(na, nb)}")
+    pages = bytes_ = bits = 0
+    for d in diff_pages(a, b):
+        pages += 1
+        offs = d.offsets
+        bytes_ += len(offs)
+        bits += d.bit_count
+        if pages <= args.max_pages:
+            page = start + d.index
+            print(f"page {page} (block {page // PAGES_PER_BLOCK}, page {page % PAGES_PER_BLOCK}): "
+                  f"{len(offs)} bytes, {d.bit_count} bits differ")
+            for off in offs[: args.max_bytes]:
+                area = "data" if off < PAGE_DATA else f"spare+{off - PAGE_DATA}"
+                print(f"  offset {off:4d} ({area}): {d.a[off]:02X}h vs {d.b[off]:02X}h, bits {d.a[off] ^ d.b[off]:08b}")
+            if len(offs) > args.max_bytes:
+                print(f"  ... {len(offs) - args.max_bytes} more bytes")
+    if pages > args.max_pages:
+        print(f"... {pages - args.max_pages} more pages")
+    n = min(na, nb)
+    if pages == 0:
+        print(f"result   : identical ({n} pages{', sizes differ' if na != nb else ''})")
+    else:
+        print(f"result   : {pages} of {n} pages differ ({bytes_} bytes, {bits} bits)")
+    return 0 if pages == 0 and na == nb else 1
+
+
+def cmd_reconcile(client: Client, args: argparse.Namespace) -> int:
+    a, b, out = Path(args.a), Path(args.b), Path(args.out)
+    report = Path(args.report) if args.report else out.with_name(out.name + ".report.json")
+    start = _start_page(a, args.start)
+    meta_a, meta_b = load_meta(a), load_meta(b)
+    if args.start is None and meta_a and meta_b and meta_a["start"] != meta_b["start"]:
+        print("error: the two dumps' sidecars give different start pages", file=sys.stderr)
+        return 1
+    r = reconcile(client, a, b, out, report, start=start, reads=args.reads, min_agree=args.min_agree,
+                  force=args.force)
+    counts = Counter(o.status for o in r.outcomes)
+    min_agree = args.min_agree or default_min_agree(args.reads)
+    print(f"pages    : {r.pages}, {len(r.outcomes)} differ between the two passes")
+    if r.outcomes:
+        print(f"re-read  : {args.reads}x each, a bit needs {min_agree} of {args.reads} votes")
+        print(f"outcome  : {counts['consistent']} consistent re-reads, {counts['corrected']} corrected by majority, "
+              f"{counts['unstable']} UNSTABLE")
+        print(f"bits     : {sum(len(o.bits) for o in r.outcomes)} non-unanimous bits listed in the report")
+    for o in r.unstable:
+        print(f"UNSTABLE : page {o.page} (block {o.page // PAGES_PER_BLOCK}): no clear majority; flagged in the report")
+    print(f"output   : {out}")
+    print(f"report   : {report}")
+    return 1 if r.unstable else 0
+
+
 def _positive_int(text: str) -> int:
     n = int(text)
     if n < 1:
@@ -251,6 +361,13 @@ def _ranged_int(text: str, limit: int, what: str) -> int:
     n = int(text, 0)
     if not 0 <= n < limit:
         raise argparse.ArgumentTypeError(f"{what} must be 0..{limit - 1}")
+    return n
+
+
+def _nonneg_int(text: str) -> int:
+    n = int(text)
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
     return n
 
 
@@ -301,6 +418,41 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--repeat", type=_positive_int, default=1, metavar="K", help="read the range K times (default 1)")
     sp.add_argument("--hexdump", action="store_true", help="print the first read of every page")
     sp.set_defaults(func=cmd_read)
+
+    sp = sub.add_parser("dump", help="dump pages (data + spare) to a raw file, with a .meta.json sidecar")
+    sp.add_argument("--out", required=True, metavar="FILE", help="output image (2112 bytes per page)")
+    sp.add_argument("--start", type=_page_index, default=0, metavar="N", help="first page (default 0)")
+    sp.add_argument("--count", type=_positive_int, metavar="M", help="number of pages (default: to the end)")
+    g = sp.add_mutually_exclusive_group()
+    g.add_argument("--resume", action="store_true", help="continue an interrupted dump of the same range")
+    g.add_argument("--force", action="store_true", help="overwrite an existing FILE")
+    sp.add_argument("--retries", type=_nonneg_int, default=DEFAULT_RETRIES, metavar="R",
+                    help=f"re-reads of a page with an R/B# timeout before stopping (default {DEFAULT_RETRIES})")
+    sp.set_defaults(func=cmd_dump)
+
+    sp = sub.add_parser("compare", help="compare two dumps page by page (no device needed)")
+    sp.add_argument("a")
+    sp.add_argument("b")
+    sp.add_argument("--start", type=_page_index, metavar="N", help="chip page of the first file page (default: "
+                    "from A's sidecar, else 0)")
+    sp.add_argument("--max-pages", type=_positive_int, default=100, metavar="N", help="pages to list (default 100)")
+    sp.add_argument("--max-bytes", type=_positive_int, default=16, metavar="N",
+                    help="differing bytes to list per page (default 16)")
+    sp.set_defaults(func=cmd_compare, needs_device=False)
+
+    sp = sub.add_parser("reconcile", help="re-read pages that differ between two dumps, majority-vote each bit")
+    sp.add_argument("a")
+    sp.add_argument("b")
+    sp.add_argument("--out", required=True, metavar="FINAL", help="reconciled image (must not exist, or --force)")
+    sp.add_argument("--report", metavar="FILE", help="JSON report (default FINAL.report.json)")
+    sp.add_argument("--reads", type=_positive_int, default=DEFAULT_READS, metavar="K",
+                    help=f"re-reads per differing page (default {DEFAULT_READS})")
+    sp.add_argument("--min-agree", type=_positive_int, metavar="M",
+                    help="votes a bit needs to count as settled (default: 2/3 of K, at least a majority)")
+    sp.add_argument("--start", type=_page_index, metavar="N", help="chip page of the first file page (default: "
+                    "from the sidecars, else 0)")
+    sp.add_argument("--force", action="store_true", help="overwrite FINAL and the report")
+    sp.set_defaults(func=cmd_reconcile)
     return p
 
 
@@ -308,6 +460,8 @@ def main(argv: list[str] | None = None, transport_factory: Callable[[str | None]
     args = build_parser().parse_args(argv)
     transport = None
     try:
+        if not getattr(args, "needs_device", True):
+            return args.func(None, args)
         transport = (transport_factory or open_transport)(args.port)
         return args.func(Client(transport, timeout=args.timeout), args)
     except NandToolError as e:  # port, transport, framing, device-status and version errors

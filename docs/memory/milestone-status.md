@@ -47,6 +47,12 @@ metadata:
   and an ABORT in the same packet as READ_PAGES all behave per PROTOCOL.md. Stable full-speed page data also settles
   the R/B# question: it works; a reset of an idle chip is just faster than the first sample.
 - 2026-10-04: **M4 APPROVED by the user**; committed and pushed. M5 next.
+- 2026-10-04: M5 code written (dump.py, compare.py, reconcile.py; `nandtool dump/compare/reconcile`). On hardware,
+  run in the session: two full passes `dumps/pass1.bin`, `dumps/pass2.bin` (131072 pages each, 5:20 and 5:14,
+  844/861 KiB/s, 0 retries, 0 restarts), both with the same SHA-256; `compare` identical; `reconcile` → 0 pages
+  differ, `dumps/final.bin` (same SHA). Ctrl-C + `--resume` verified on hardware. The dumps live only in the
+  gitignored `dumps/` dir on the WSL machine.
+- 2026-10-04: **M5 APPROVED by the user**; committed and pushed. M6 next.
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after
