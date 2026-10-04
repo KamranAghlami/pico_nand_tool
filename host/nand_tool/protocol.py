@@ -29,6 +29,8 @@ REQ_TIMEOUT_MS = 100
 PAGE_NONE = 0xFFFFFFFF
 END_FLAG = 0x80
 
+PARAM_LEN = 768  # READ_PARAM payload: 3 x 256-byte parameter page copies
+
 
 class Cmd(IntEnum):
     PING = 0x01

@@ -34,6 +34,12 @@ metadata:
   Read ID. Either tRST from idle is shorter than tWB + poll latency (~0.3 µs), or R/B# (ball C8 → GP14) is open and
   the 10k pull-up holds it high. M3 (READ_PARAM, tR ≈ 25 µs) should tell which.
 - 2026-10-04: **M2 APPROVED by the user** on that output (R/B# question still open), committed; M3 next.
+- 2026-10-04: M3 code written (READ_PARAM, `nandtool param`, host/nand_tool/onfi.py, Table 3.4 reference page in
+  host/tests/golden_param.py; CRC 0xC53B confirmed). On hardware, run in the session: `param` → all 3 copies
+  signature + CRC `3B C5` OK, identical, geometry matches the SPEC; 100/100 reads identical and byte-identical to
+  the reference page. That also argues R/B# works: copy 0 is read first, right after tR, and would fail if the
+  wait ended early. Not yet airtight; M4 page reads (tR ≤ 25 µs) are the next check.
+- 2026-10-04: **M3 APPROVED by the user**; M2 + M3 committed and pushed. M4 next.
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after

@@ -1,4 +1,5 @@
 from fake_device import FakeDevice, Fault
+from golden_param import GOLDEN_PARAM, GOLDEN_PARAM_X3
 
 from nand_tool.cli import main
 from nand_tool.errors import TransportError
@@ -115,3 +116,65 @@ def test_status_not_ready_after_reset_is_an_error(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "20h (expected 60h after reset)" in out and "busy" in out
     assert run(dev, "status") == 0  # without --reset there is no expectation
+
+
+def test_param_pass(capsys):
+    assert run(FakeDevice(), "param") == 0
+    out = capsys.readouterr().out
+    assert out.count("CRC stored 3B C5, computed C53Bh: OK") == 3
+    assert "all 3 identical" in out
+    assert "SPANSION S34ML02G1" in out and "ONFI 1.0" in out
+    assert "2048 + 64 B" in out and "address cycles 23h (2 column + 3 row)" in out
+    assert "geometry : matches the SPEC" in out
+    assert "result   : PASS" in out
+
+
+def _flip(data: bytes, offset: int, mask: int = 0x01) -> bytes:
+    b = bytearray(data)
+    b[offset] ^= mask
+    return bytes(b)
+
+
+def test_param_one_bad_copy_fails(capsys):
+    dev = FakeDevice()
+    dev.param = _flip(GOLDEN_PARAM_X3, 256 + 90)  # copy 1, inside the CRC range
+    assert run(dev, "param") == 1
+    out = capsys.readouterr().out
+    assert "copy 1   : signature OK, CRC stored 3B C5, computed" in out and ": BAD" in out
+    assert "NOT identical (copy 1 differs from copy 0 in 1 bytes, copy 2 in 0)" in out
+    assert "result   : FAIL" in out
+    assert "R/B#" not in out  # copy 0 is fine: no tR hint
+
+
+def test_param_copy0_bad_hints_at_rb(capsys):
+    dev = FakeDevice()
+    dev.param = bytes(16) + GOLDEN_PARAM_X3[16:]  # first bytes read during tR
+    assert run(dev, "param") == 1
+    out = capsys.readouterr().out
+    assert "check R/B#" in out
+    assert "UNVERIFIED" not in out  # decoded from a good copy
+
+
+def test_param_stuck_line_fails_everywhere(capsys):
+    dev = FakeDevice()
+    dev.param = bytes(b & ~0x40 for b in GOLDEN_PARAM_X3)  # IO6 stuck low (set in every letter of "ONFI")
+    assert run(dev, "param", "--hexdump") == 1
+    out = capsys.readouterr().out
+    assert out.count("signature BAD") == 3
+    assert "UNVERIFIED" in out and "MISMATCH" in out
+    assert "  0000  0F 0E 06 09" in out
+    assert "copy 2 raw:" in out and "  0200  " in out
+
+
+def test_param_valid_page_with_wrong_geometry_fails(capsys):
+    from nand_tool.onfi import onfi_crc16
+
+    page = bytearray(GOLDEN_PARAM)
+    page[96:100] = (1024).to_bytes(4, "little")  # a 1 Gb part's block count
+    page[254:256] = onfi_crc16(bytes(page[:254])).to_bytes(2, "little")
+    dev = FakeDevice()
+    dev.param = bytes(page) * 3
+    assert run(dev, "param") == 1
+    out = capsys.readouterr().out
+    assert "MISMATCH : blocks_per_lun = 1024, SPEC expects 2048" in out
+    assert "(datasheet: 3B C5)" in out

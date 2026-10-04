@@ -156,6 +156,16 @@ static void cmd_read_status(const proto_req_t *r) {
     send_resp(r->cmd, r->seq, st, PROTO_PAGE_NONE, &sr, st == PROTO_ST_OK ? 1 : 0);
 }
 
+static void cmd_read_param(const proto_req_t *r) {
+    if (r->arg_len != 0) {
+        send_status(r, PROTO_ST_ERR_BAD_ARGS);
+        return;
+    }
+    static uint8_t buf[PROTO_PARAM_LEN]; /* static: keeps 768 B off the 2 KB main stack */
+    uint8_t st = nand_read_param(buf, sizeof buf);
+    send_resp(r->cmd, r->seq, st, PROTO_PAGE_NONE, buf, st == PROTO_ST_OK ? sizeof buf : 0);
+}
+
 static void cmd_abort(const proto_req_t *r) {
     /* No stream is running outside READ_PAGES, so ABORT here is a no-op. */
     send_status(r, r->arg_len ? PROTO_ST_ERR_BAD_ARGS : PROTO_ST_OK);
@@ -178,11 +188,14 @@ static void dispatch(const proto_req_t *r) {
     case PROTO_CMD_READ_STATUS:
         cmd_read_status(r);
         break;
+    case PROTO_CMD_READ_PARAM:
+        cmd_read_param(r);
+        break;
     case PROTO_CMD_ABORT:
         cmd_abort(r);
         break;
     default:
-        /* Includes commands not implemented yet at this milestone (M2): BUS_TEST, READ_PARAM, READ_PAGES. */
+        /* Includes commands not implemented yet at this milestone (M3): BUS_TEST, READ_PAGES. */
         send_status(r, PROTO_ST_ERR_UNKNOWN_CMD);
         break;
     }

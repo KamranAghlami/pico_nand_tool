@@ -1,5 +1,7 @@
 #include "nand_ops.h"
 
+#include <stddef.h>
+
 #include "nand_bus.h"
 #include "nand_cmd.h"
 #include "protocol_defs.h"
@@ -42,4 +44,22 @@ uint8_t nand_read_status(uint8_t *sr) {
     nand_bus_read(sr, 1);
     nand_bus_deselect();
     return PROTO_ST_OK;
+}
+
+uint8_t nand_read_param(uint8_t *buf, uint32_t n) {
+    /* §3.19 note: without a Reset first, the 41 nm 2 Gb part can return wrong values (00h). */
+    uint8_t st = nand_reset(NULL);
+    if (st != PROTO_ST_OK)
+        return st;
+
+    /* §3.19, Fig. 44: ECh, 00h, R/B# low for tR (≤ 25 µs, Table 3.4 bytes 137-138), then data out. R/B# is polled, not
+     * the status register, so no extra 00h is needed (Fig. 44 note 78). */
+    nand_bus_select();
+    NAND_CMD(NAND_CMD_READ_PARAM);
+    nand_bus_addr(0x00);
+    bool ready = nand_bus_wait_ready(NULL); /* tWB, tR, tRR */
+    if (ready)
+        nand_bus_read(buf, n);
+    nand_bus_deselect();
+    return ready ? PROTO_ST_OK : PROTO_ST_ERR_RB_TIMEOUT;
 }

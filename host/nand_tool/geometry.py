@@ -10,6 +10,28 @@ ONFI_SIGNATURE = b"ONFI"  # §3.18: 90h + 20h, four bytes
 ID_ADDR = 0x00  # §3.16
 ONFI_ADDR = 0x20  # §3.18
 
+# Geometry (docs/SPEC.md "Target chip facts"; §1.5, Table 1)
+PAGE_DATA = 2048
+PAGE_SPARE = 64
+PAGE_SIZE = PAGE_DATA + PAGE_SPARE
+PAGES_PER_BLOCK = 64
+BLOCKS = 2048
+TOTAL_PAGES = PAGES_PER_BLOCK * BLOCKS
+
+# Parameter page (Table 3.4, S34ML02G100 x8): CRC bytes 254-255, and the decoded fields the SPEC pins down.
+PARAM_CRC_BYTES = bytes((0x3B, 0xC5))
+EXPECTED_PARAM = {
+    "page_data_bytes": PAGE_DATA,
+    "page_spare_bytes": PAGE_SPARE,
+    "pages_per_block": PAGES_PER_BLOCK,
+    "blocks_per_lun": BLOCKS,
+    "luns": 1,
+    "address_cycles": 0x23,  # 2 column + 3 row
+    "bits_per_cell": 1,
+    "bad_blocks_max": 40,
+    "t_r_us": 25,
+}
+
 SR_AFTER_RESET = 0x60  # §3.12: 60h with WP# low (E0h with WP# high)
 
 # Status register bits (§3.11, Table 13)

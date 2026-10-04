@@ -1,12 +1,13 @@
 """Fake Pico NAND Tool: simulates the firmware's wire protocol in-process and implements the Transport interface.
 
-Mirrors the firmware as of milestone M2: PING, SET_TIMING, ABORT, RESET, READ_ID and READ_STATUS are implemented,
-and every other command answers ERR_UNKNOWN_CMD, exactly like the real M2 firmware. It grows with the firmware,
-milestone by milestone (the parameter page, NAND image, bitflips and READ_PAGES streaming come at M3-M5).
+Mirrors the firmware as of milestone M3: PING, SET_TIMING, ABORT, RESET, READ_ID, READ_STATUS and READ_PARAM are
+implemented, and every other command answers ERR_UNKNOWN_CMD, exactly like the real M3 firmware. It grows with the
+firmware, milestone by milestone (the NAND image, bitflips and READ_PAGES streaming come at M4-M5).
 
 The simulated chip is an S34ML02G100 with WP# low. Hardware faults: chip_id (e.g. all FFh = no chip), wp_high
 (SR bit 7 set), rb_stuck_low (RESET times out), rb_never_low (RESET reports busy_ns = 0), id_glitches (a list of
-IDs returned by the next READ_IDs at addr 00h).
+IDs returned by the next READ_IDs at addr 00h), param (the 768 bytes READ_PARAM returns; default: the Table 3.4
+reference page, three times).
 
 Transport faults can be injected with inject(). Each queued fault applies to the next non-ABORT request received
 (ABORTs are the client's own recovery traffic, docs/PROTOCOL.md "Host recovery rule").
@@ -16,6 +17,8 @@ from __future__ import annotations
 
 import struct
 from enum import Enum, auto
+
+from golden_param import GOLDEN_PARAM_X3
 
 from nand_tool.protocol import (
     CRC_LEN,
@@ -73,6 +76,7 @@ class FakeDevice:
         self.rb_never_low = rb_never_low
         self.reset_busy_ns = reset_busy_ns
         self.id_glitches: list[bytes] = []
+        self.param = GOLDEN_PARAM_X3
         self.sr = self._sr_after_reset()  # power-on state equals the reset state (§3.12)
         self._rx = bytearray()
         self._tx = bytearray()
@@ -204,6 +208,14 @@ class FakeDevice:
             if addr not in (0x00, 0x20) or not 1 <= n <= 8:
                 return reply(Status.ERR_BAD_ARGS)
             return reply(Status.OK, self._id_bytes(addr, n))
+
+        if cmd == Cmd.READ_PARAM:
+            if args:
+                return reply(Status.ERR_BAD_ARGS)
+            if self.rb_stuck_low:
+                return reply(Status.ERR_RB_TIMEOUT)
+            self.sr = self._sr_after_reset()  # the firmware issues FFh first (§3.19 note)
+            return reply(Status.OK, self.param)
 
         if cmd == Cmd.READ_STATUS:
             if args:

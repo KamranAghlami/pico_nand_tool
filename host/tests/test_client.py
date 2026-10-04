@@ -3,6 +3,7 @@ import time
 
 import pytest
 from fake_device import FakeDevice, Fault
+from golden_param import GOLDEN_PARAM_X3
 
 from nand_tool.client import Client, DeviceError, ProtocolMismatch, TransportError
 from nand_tool.errors import FrameError
@@ -54,8 +55,8 @@ def test_bad_args(client):
     assert e.value.status == Status.ERR_BAD_ARGS
 
 
-def test_unimplemented_command_at_m2(client):
-    for cmd in (Cmd.BUS_TEST, Cmd.READ_PARAM, Cmd.READ_PAGES):
+def test_unimplemented_command_at_m3(client):
+    for cmd in (Cmd.BUS_TEST, Cmd.READ_PAGES):
         with pytest.raises(DeviceError) as e:
             client.call(cmd)
         assert e.value.status == Status.ERR_UNKNOWN_CMD
@@ -88,7 +89,25 @@ def test_read_id_bad_args(client, args):
     assert e.value.status == Status.ERR_BAD_ARGS
 
 
-@pytest.mark.parametrize("cmd", [Cmd.RESET, Cmd.READ_STATUS])
+def test_read_param(client, dev):
+    assert client.read_param() == GOLDEN_PARAM_X3
+    assert client.read_status() == 0x60  # the firmware issued FFh first
+
+
+def test_read_param_rb_timeout():
+    c = Client(FakeDevice(rb_stuck_low=True), timeout=0.05, quiet_s=0.005)
+    with pytest.raises(DeviceError) as e:
+        c.read_param()
+    assert e.value.status == Status.ERR_RB_TIMEOUT
+
+
+def test_read_param_wrong_length_is_frame_error(client, dev):
+    dev.param = GOLDEN_PARAM_X3[:512]
+    with pytest.raises(FrameError, match="READ_PARAM"):
+        client.read_param()
+
+
+@pytest.mark.parametrize("cmd", [Cmd.RESET, Cmd.READ_STATUS, Cmd.READ_PARAM])
 def test_nand_commands_take_no_args(client, cmd):
     with pytest.raises(DeviceError) as e:
         client.call(cmd, b"\x00")

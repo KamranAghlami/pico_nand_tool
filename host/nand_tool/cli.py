@@ -1,4 +1,4 @@
-"""`nandtool` command line. M2 scope: ping, timing, id, status. Further subcommands arrive with their milestones
+"""`nandtool` command line. M3 scope: ping, timing, id, status, param. Further subcommands arrive with their milestones
 (docs/SPEC.md)."""
 
 from __future__ import annotations
@@ -13,13 +13,16 @@ from .client import Client
 from .errors import NandToolError
 from .geometry import (
     EXPECTED_ID,
+    EXPECTED_PARAM,
     ONFI_ADDR,
     ONFI_SIGNATURE,
+    PARAM_CRC_BYTES,
     SR_AFTER_RESET,
     SR_NOT_PROTECTED,
     decode_id,
     decode_status,
 )
+from .onfi import PARAM_PAGE_LEN, ParamPage, split_copies
 from .protocol import PROTO_VERSION, TimingMode
 from .transport import Transport, open_transport
 
@@ -103,6 +106,64 @@ def cmd_status(client: Client, args: argparse.Namespace) -> int:
     return 1 if args.reset and sr != SR_AFTER_RESET else 0
 
 
+def _hexdump(data: bytes, base: int = 0) -> None:
+    for off in range(0, len(data), 16):
+        row = data[off : off + 16]
+        text = "".join(chr(b) if 32 <= b < 127 else "." for b in row)
+        print(f"  {base + off:04X}  {row.hex(' ').upper():<47}  {text}")
+
+
+def cmd_param(client: Client, args: argparse.Namespace) -> int:
+    data = client.read_param()
+    copies = [ParamPage.parse(c) for c in split_copies(data)]
+    ok = True
+    for i, pp in enumerate(copies):
+        sig = "OK" if pp.signature_ok else f"BAD ({_hex(pp.signature)})"
+        crc = f"stored {_hex(pp.crc_bytes)}, computed {pp.crc_computed:04X}h: {'OK' if pp.crc_ok else 'BAD'}"
+        expected = "" if pp.crc_bytes == PARAM_CRC_BYTES else f" (datasheet: {_hex(PARAM_CRC_BYTES)})"
+        print(f"copy {i}   : signature {sig}, CRC {crc}{expected}")
+        ok = ok and pp.valid and pp.crc_bytes == PARAM_CRC_BYTES
+    distinct = {pp.raw for pp in copies}
+    if len(distinct) == 1:
+        print("copies   : all 3 identical")
+    else:
+        diffs = [sum(a != b for a, b in zip(copies[0].raw, pp.raw)) for pp in copies[1:]]
+        print(f"copies   : NOT identical (copy 1 differs from copy 0 in {diffs[0]} bytes, copy 2 in {diffs[1]})")
+    if not copies[0].valid and any(pp.valid for pp in copies[1:]):
+        print(
+            "hint     : copy 0 is bad but a later copy is good. Reading may have started before tR ended: "
+            "check R/B# (GP14, ball C8)."
+        )
+
+    pp = next((c for c in copies if c.valid), copies[0])
+    tag = "" if pp.valid else "  (UNVERIFIED: no copy passed)"
+    onfi = "ONFI 1.0" if pp.revision == 0x0002 else f"ONFI revision bits {pp.revision:04X}h"
+    print(f"chip     : {pp.manufacturer} {pp.model}, JEDEC {pp.jedec_id:02X}h, {onfi}{tag}")
+    print(f"page     : {pp.page_data_bytes} + {pp.page_spare_bytes} B, partial {pp.partial_data_bytes} + "
+          f"{pp.partial_spare_bytes} B, {pp.programs_per_page} programs/page")
+    print(f"array    : {pp.pages_per_block} pages/block, {pp.blocks_per_lun} blocks/LUN, {pp.luns} LUN, "
+          f"{pp.bits_per_cell} bit/cell, address cycles {pp.address_cycles:02X}h "
+          f"({pp.address_cycles >> 4} column + {pp.address_cycles & 0xF} row)")
+    print(f"quality  : max {pp.bad_blocks_max} bad blocks/LUN, endurance {pp.block_endurance} cycles, first "
+          f"{pp.guaranteed_blocks} block(s) guaranteed for {pp.guaranteed_endurance} cycles, ECC {pp.ecc_bits} bit")
+    print(f"timing   : tR {pp.t_r_us} us, tPROG {pp.t_prog_us} us, tBERS {pp.t_bers_us} us, tCCS {pp.t_ccs_ns} ns, "
+          f"timing modes {pp.timing_modes:04X}h")
+    wrong = {k: (getattr(pp, k), v) for k, v in EXPECTED_PARAM.items() if getattr(pp, k) != v}
+    if wrong:
+        ok = False
+        for k, (got, want) in wrong.items():
+            print(f"MISMATCH : {k} = {got}, SPEC expects {want}")
+    else:
+        print("geometry : matches the SPEC")
+
+    if args.hexdump:
+        for i, c in enumerate(copies):
+            print(f"copy {i} raw:")
+            _hexdump(c.raw, i * PARAM_PAGE_LEN)
+    print("result   : PASS" if ok else "result   : FAIL")
+    return 0 if ok else 1
+
+
 def _positive_int(text: str) -> int:
     n = int(text)
     if n < 1:
@@ -132,8 +193,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_id)
 
     sp = sub.add_parser("status", help="read and decode the status register (00h, 70h)")
-    sp.add_argument("--reset", action="store_true", help="issue RESET (FFh) first; exit 1 unless the status is then 60h")
+    sp.add_argument("--reset", action="store_true", help="issue FFh first; exit 1 unless the status is then 60h")
     sp.set_defaults(func=cmd_status)
+
+    sp = sub.add_parser(
+        "param", help="read the 3 ONFI parameter page copies, check signature + CRC, decode geometry"
+    )
+    sp.add_argument("--hexdump", action="store_true", help="also print all 768 raw bytes")
+    sp.set_defaults(func=cmd_param)
     return p
 
 

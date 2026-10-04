@@ -9,6 +9,7 @@ import time
 from .errors import FrameError, NandToolError, TransportError
 from .protocol import (
     CRC_LEN,
+    PARAM_LEN,
     PROTO_VERSION,
     RESP_HDR_LEN,
     TIMING_WIRE_LEN,
@@ -172,6 +173,13 @@ class Client:
         payload = self.call(Cmd.READ_ID, args)
         if len(payload) != n:
             raise FrameError(f"READ_ID returned {len(payload)} bytes, expected {n}")
+        return payload
+
+    def read_param(self) -> bytes:
+        """FFh, then ECh 00h: the three 256-byte parameter page copies (768 bytes), unverified."""
+        payload = self.call(Cmd.READ_PARAM)
+        if len(payload) != PARAM_LEN:
+            raise FrameError(f"READ_PARAM returned {len(payload)} bytes, expected {PARAM_LEN}")
         return payload
 
     def read_status(self) -> int:

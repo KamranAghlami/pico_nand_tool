@@ -21,6 +21,8 @@
 #define PROTO_PAGE_NONE 0xFFFFFFFF
 #define PROTO_END_FLAG 0x80
 
+#define PROTO_PARAM_LEN 768 /* READ_PARAM payload: 3 x 256-byte parameter page copies */
+
 /* Commands */
 #define PROTO_CMD_PING 0x01
 #define PROTO_CMD_BUS_TEST 0x02

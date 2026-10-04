@@ -15,4 +15,8 @@ uint8_t nand_read_id(uint8_t addr, uint8_t *buf, uint32_t n);
 /* Dummy 00h (§3.16 note), then 70h and one status byte (§3.9, Fig. 31; bits: §3.11, Table 13). */
 uint8_t nand_read_status(uint8_t *sr);
 
+/* FFh first (§3.19 note: required for 41 nm 2 Gb parts), then ECh + 00h, wait tR on R/B#, read n bytes (§3.19,
+ * Fig. 44). n = 768 gives the three redundant 256-byte copies (Table 3.4). */
+uint8_t nand_read_param(uint8_t *buf, uint32_t n);
+
 #endif
