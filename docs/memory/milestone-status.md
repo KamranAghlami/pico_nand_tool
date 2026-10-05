@@ -89,6 +89,13 @@ metadata:
   `read --block 80 --repeat 100` stable; dump of the block = pattern (sha256 4f311790…5159). Erase back: SR E0h,
   busy 1146 us, so ~1.1 ms is this chip's tBERS whether the block is blank or not (max 10 ms). Then 64/64 FFh x10,
   and `write final.bin --dry-run` 2048/2048 identical.
+- 2026-10-05: **W5 PASSED** (run in the session under the same go-ahead). Block 1024 (64/64 pages with data + OOB):
+  `write final.bin --first-block 1024 --count 1 --all --backup final.bin` → written, verified; dump of the block =
+  final.bin's block. Then a modified copy (18 bytes changed on pages 10 and 40, one in OOB)
+  via `write mod1024.bin --start 65536` (only-changed found the block) → dump = mod image, compare vs
+  the original shows exactly those 18 bytes. Restored with `write final.bin --first-block 1024 --count 1` → dump =
+  the original block; `write final.bin --dry-run` 2048/2048 identical. `write` leaves `<image>.write.json` (complete: true)
+  next to the image, e.g. dumps/final.bin.write.json.
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after

@@ -585,7 +585,8 @@ def cmd_write(client: Client, args: argparse.Namespace) -> int:
     count = args.count if args.count is not None else image.first_block + image.blocks - first
     mode = "all blocks" if args.all else "only-changed"
     print(f"image    : {image.path} (blocks {image.first_block}..{image.first_block + image.blocks - 1})")
-    print(f"range    : image blocks {first}..{first + count - 1} ({count} blocks), {mode}, map {args.map}")
+    print(f"range    : image blocks {first}..{first + count - 1} ({count} block{'s' if count != 1 else ''}), {mode}, "
+          f"map {args.map}")
     if not _check_chip(client):
         return 1
 
