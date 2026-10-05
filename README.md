@@ -16,7 +16,9 @@ block at a time, and the firmware refuses erase/program otherwise, before touchi
 pull-down and by the firmware, and goes high only for the duration of one armed erase or program.
 
 **Status:** the read side (M0, M2–M6) has passed on hardware; a full dump has been taken and verified. Write mode
-(W1: code and tests) is done; the hardware milestones W2–W7 are next (see [Write mode](#write-mode)).
+is done through W6 on hardware: a single block was erased, programmed with test patterns and restored, then the whole
+chip was rewritten from the dump and dumped again to the original SHA-256 (see [Write mode](#write-mode)). W7, a clone
+onto a second blank chip, is still to do.
 
 ## Hardware
 
