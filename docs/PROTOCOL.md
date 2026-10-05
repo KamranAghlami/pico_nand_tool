@@ -204,6 +204,12 @@ the device is armed and the block lies in the armed range.
   arm or the last successful erase/program, and any erase/program that ends in `ERR_RB_TIMEOUT`, `ERR_OP_FAILED` or
   `ERR_WP_STUCK`. `ERR_BAD_ARGS`, `ERR_NOT_ARMED` and `ERR_BAD_BLOCK` leave it as it is.
 - Erase and program are single-response commands (no stream). During a `READ_PAGES` stream they get `ERR_BUSY`.
+- **Pipelining:** the host may send the next `PROGRAM_PAGE` before the previous response has arrived (the host tool
+  keeps 2 in flight). The device handles requests strictly in arrival order and answers each one in that order;
+  USB flow control holds back what does not fit in its receive buffer. A failed program disarms the device, so a
+  program already in flight is refused with `ERR_NOT_ARMED` without touching the bus. The host stops sending at the
+  first non-`OK` response and reads the replies still in flight. A lost or corrupt response, or `ERR_CRC` (nothing
+  ran for that request, but later ones may have), means the host resyncs and re-does the whole block.
 - **The host must not re-send an erase or program after a lost response**: it cannot know whether it ran. The host
   tool re-does the whole block instead (erase, program, and verify if asked). An `ERR_CRC` response is safe to retry:
   nothing ran.

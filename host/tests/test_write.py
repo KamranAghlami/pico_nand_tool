@@ -190,6 +190,77 @@ def test_write_ops_get_busy_during_a_stream(client, dev):
     stream.close()
 
 
+# ---- pipelined program (Client.program_pages) ---------------------------------------------------------------
+
+
+class Recorder:
+    """Transport wrapper that logs the order of writes and reads."""
+
+    def __init__(self, dev):
+        self.dev, self.log = dev, []
+
+    def write(self, data):
+        self.log.append("w")
+        self.dev.write(data)
+
+    def read(self, n):
+        out = self.dev.read(n)
+        if out:
+            self.log.append("r")
+        return out
+
+    def reset_input(self):
+        self.dev.reset_input()
+
+    def close(self):
+        self.dev.close()
+
+
+def test_program_pages_keeps_two_requests_in_flight(dev):
+    rec = Recorder(dev)
+    c = Client(rec, timeout=0.05, quiet_s=0.005)
+    c.arm_write(3, 3)
+    c.erase_block(3)
+    rec.log.clear()
+    results = c.program_pages([(3 * PPB + i, page_of(i)) for i in range(5)])
+    assert [r.sr for r in results] == [0xE0] * 5
+    assert "".join(rec.log).replace("rr", "r").startswith("wwrwrwrwr")  # the 2nd request goes out before reply 1
+    assert [op for op in dev.ops if op[0] == "program"] == [("program", 3 * PPB + i) for i in range(5)]
+
+
+def test_program_pages_failure_stops_and_in_flight_request_is_refused(client, dev):
+    client.arm_write(3, 3)
+    client.erase_block(3)
+    dev.program_fail = {3 * PPB + 2}
+    with pytest.raises(WriteOpError, match="ERR_OP_FAILED") as e:
+        client.program_pages([(3 * PPB + i, page_of(i)) for i in range(6)])
+    assert e.value.page == 3 * PPB + 2
+    # page 3 was already in flight: the device had disarmed, so it never reached the chip; nothing after it was sent
+    assert [op[1] for op in dev.ops if op[0] == "program"] == [3 * PPB, 3 * PPB + 1, 3 * PPB + 2]
+    assert [r[0] for r in dev.requests[-2:]] == [Cmd.PROGRAM_PAGE, Cmd.PROGRAM_PAGE] and dev.armed is None
+
+
+@pytest.mark.parametrize("fault", [Fault.DROP, Fault.FLIP, Fault.CORRUPT_REQUEST])
+def test_program_pages_lost_reply_is_never_resent(client, dev, fault):
+    client.arm_write(3, 3)
+    client.erase_block(3)
+    dev.cmd_faults[Cmd.PROGRAM_PAGE] = [None, None, fault]
+    with pytest.raises(LostResponse):
+        client.program_pages([(3 * PPB + i, page_of(i)) for i in range(6)])
+    progs = [op[1] for op in dev.ops if op[0] == "program"]
+    assert len(progs) == len(set(progs))  # no page was sent twice
+
+
+@pytest.mark.parametrize("fault", [Fault.DROP, Fault.CORRUPT_REQUEST])
+def test_write_block_redoes_the_block_after_a_lost_pipelined_reply(client, dev, fault):
+    pages = [page_of(i) for i in range(PPB)]
+    dev.cmd_faults[Cmd.PROGRAM_PAGE] = [None] * 10 + [fault]
+    write_block(client, 9, pages, verify=True)
+    assert [op for op in dev.ops if op[0] == "erase"] == [("erase", 9), ("erase", 9)]
+    assert [dev.chip_page(9 * PPB + i) for i in range(PPB)] == pages
+    assert max(dev.nop.values()) == 1 and dev.armed is None
+
+
 # ---- write_block ------------------------------------------------------------------------------------------------
 
 

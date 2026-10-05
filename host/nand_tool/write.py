@@ -139,15 +139,14 @@ def write_block(
         raise ValueError("a block is 64 pages of 2112 bytes")
     first = block * PAGES_PER_BLOCK
     for attempt in range(1, BLOCK_ATTEMPTS + 1):
-        programmed = 0
         try:
             client.arm_write(block, block, ARM_IDLE_S)
             try:
                 client.erase_block(block, ignore_bad_marker=ignore_bad_marker)
-                for i, data in enumerate(pages):
-                    if data != ERASED_PAGE:  # an erased page already reads FFh: don't spend a program on it
-                        client.program_page(first + i, data)
-                        programmed += 1
+                # An erased page already reads FFh: don't spend a program on it. Pipelined (Client.program_pages).
+                todo = [(first + i, data) for i, data in enumerate(pages) if data != ERASED_PAGE]
+                client.program_pages(todo)
+                programmed = len(todo)
             finally:
                 disarm_quietly(client)
         except LostResponse as e:

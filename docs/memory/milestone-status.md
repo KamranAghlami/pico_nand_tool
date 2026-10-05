@@ -110,6 +110,13 @@ metadata:
   bit-banged data path. SPEC.md, the docs/CLAUDE.md hard rule, PROTOCOL.md, README and a WRITE_PROPOSAL note were
   updated. Checked on hardware on block 80 (erase with/without --verify; pattern write without, `--dry-run` matched;
   restored blank with --verify).
+- 2026-10-05: **Write speed, root cause + fix.** PC→Pico tops out at ~440 KiB/s even for plain filler bytes:
+  TinyUSB's RP2040 driver keeps device OUT endpoints single-buffered (pico-sdk 2.3.1
+  lib/tinyusb/src/portable/raspberrypi/rp2040/rp2040_usb.c:161, "skip double buffered for OUT endpoint in Device
+  mode"), while IN is double-buffered (~830 KiB/s reads). On top, stop-and-wait cost ~3 ms per page. Fix (host only,
+  no firmware change): Client.program_pages keeps 2 PROGRAM_PAGE requests in flight (PROTOCOL.md "Pipelining");
+  depth 3-4 gains nothing. Measured on blocks 1024-1031: 8.5 → 5.8 ms per page, 248 → 363 kB/s programmed;
+  readback = final.bin. Going further would mean patching TinyUSB for double-buffered OUT (not done).
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after

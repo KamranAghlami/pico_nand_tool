@@ -5,7 +5,8 @@ from __future__ import annotations
 import random
 import struct
 import time
-from collections.abc import Iterator
+from collections import deque
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 from .errors import FrameError, NandToolError, TransportError
@@ -81,6 +82,11 @@ class LostResponse(TransportError):
 
 class ProtocolMismatch(NandToolError):
     pass
+
+
+# PROGRAM_PAGE requests in flight in program_pages() (docs/PROTOCOL.md "Write mode"). Two keep the USB OUT pipe busy
+# while the device programs and answers; measured on hardware, more gain nothing.
+PROGRAM_DEPTH = 2
 
 
 @dataclass(frozen=True)
@@ -256,8 +262,63 @@ class Client:
             raise ValueError(f"a page is {PAGE_LEN} bytes, got {len(data)}")
         return self._write_op(Cmd.PROGRAM_PAGE, struct.pack("<I", page) + data)
 
+    def program_pages(self, pages: Sequence[tuple[int, bytes]], *, depth: int = PROGRAM_DEPTH) -> list[WriteResult]:
+        """Program (page, data) pairs in order with up to `depth` requests in flight (docs/PROTOCOL.md "Write mode").
+
+        The device handles requests strictly in order, and a failed program disarms it, so a request already in
+        flight is refused (ERR_NOT_ARMED) without touching the bus. A failure raises WriteOpError/DeviceError for the
+        first failed page, after the replies still in flight are read. A lost or garbled reply, or ERR_CRC, raises
+        LostResponse after a resync: the pages in flight may or may not have run, so the caller re-does the whole
+        block. Nothing is ever re-sent here."""
+        for _, data in pages:
+            if len(data) != PAGE_LEN:
+                raise ValueError(f"a page is {PAGE_LEN} bytes, got {len(data)}")
+        results: list[WriteResult] = []
+        inflight: deque[tuple[int, int]] = deque()  # (seq, page), oldest first
+        failure: DeviceError | None = None
+        nxt = 0
+        try:
+            while inflight or (failure is None and nxt < len(pages)):
+                while failure is None and nxt < len(pages) and len(inflight) < depth:
+                    page, data = pages[nxt]
+                    seq = self._next_seq()
+                    self.t.write(encode_request(Cmd.PROGRAM_PAGE, seq, struct.pack("<I", page) + data))
+                    inflight.append((seq, page))
+                    nxt += 1
+                seq, page = inflight[0]
+                deadline = time.monotonic() + self.timeout
+                while True:
+                    resp = self.read_response(deadline)
+                    if resp.status == Status.ERR_CRC:
+                        raise FrameError("device reported request CRC error")
+                    if resp.cmd == Cmd.PROGRAM_PAGE and resp.seq == seq:
+                        break
+                    if resp.cmd == Cmd.PROGRAM_PAGE and any(s == resp.seq for s, _ in inflight):
+                        raise FrameError(f"reply for a later page came first: the reply for page {page} was lost")
+                    # stale frame from an earlier, abandoned request: skip it (the deadline still applies)
+                inflight.popleft()
+                if failure is None:
+                    try:
+                        results.append(self._write_result(Cmd.PROGRAM_PAGE, resp))
+                    except DeviceError as e:
+                        failure = e  # stop sending; read what is still in flight (ERR_NOT_ARMED: never ran)
+        except (FrameError, TransportError) as e:
+            self.resync()
+            if failure is not None:
+                raise failure from e
+            raise LostResponse(
+                f"PROGRAM_PAGE: no valid response for page {page} ({e}); it and the pages after it may or may not "
+                "have run"
+            ) from e
+        if failure is not None:
+            raise failure
+        return results
+
     def _write_op(self, cmd: int, args: bytes) -> WriteResult:
-        resp = self.request(cmd, args, resend=False)
+        return self._write_result(cmd, self.request(cmd, args, resend=False))
+
+    @staticmethod
+    def _write_result(cmd: int, resp: Response) -> WriteResult:
         if resp.status not in (Status.OK, Status.ERR_OP_FAILED, Status.ERR_WP_STUCK):
             raise DeviceError(cmd, resp.status)
         if len(resp.payload) != WRITE_RESP_LEN:
