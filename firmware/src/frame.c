@@ -10,12 +10,11 @@ void frame_parser_reset(frame_parser_t *p) { p->len = 0; }
  * complete here. */
 static void frame_parser_resync(frame_parser_t *p) {
     uint8_t rest[PROTO_REQ_HDR_LEN];
-    uint8_t n = (uint8_t)(p->len - 1);
+    uint16_t n = (uint16_t)(p->len - 1);
     memcpy(rest, &p->buf[1], n);
     p->len = 0;
-    proto_req_t unused;
-    for (uint8_t i = 0; i < n; i++)
-        (void)frame_parser_feed(p, rest[i], &unused);
+    for (uint16_t i = 0; i < n; i++)
+        (void)frame_parser_feed(p, rest[i], NULL); /* out is only written when a frame completes */
 }
 
 frame_result_t frame_parser_feed(frame_parser_t *p, uint8_t byte, proto_req_t *out) {
@@ -25,7 +24,7 @@ frame_result_t frame_parser_feed(frame_parser_t *p, uint8_t byte, proto_req_t *o
 
     if (p->len < PROTO_REQ_HDR_LEN)
         return FRAME_NEED_MORE;
-    uint8_t arg_len = p->buf[3];
+    uint16_t arg_len = get_le16(&p->buf[3]);
     if (arg_len > PROTO_MAX_ARGS) {
         frame_parser_resync(p);
         return FRAME_NEED_MORE;
@@ -54,11 +53,11 @@ void frame_resp_header(uint8_t hdr[PROTO_RESP_HDR_LEN], uint8_t cmd, uint8_t seq
 }
 
 unsigned frame_req_encode(uint8_t out[FRAME_REQ_MAX], uint8_t cmd, uint8_t seq, const uint8_t *args,
-                          uint8_t arg_len) {
+                          uint16_t arg_len) {
     out[0] = PROTO_MAGIC_REQ;
     out[1] = cmd;
     out[2] = seq;
-    out[3] = arg_len;
+    put_le16(&out[3], arg_len);
     if (arg_len)
         memcpy(&out[PROTO_REQ_HDR_LEN], args, arg_len);
     unsigned body = PROTO_REQ_HDR_LEN + arg_len;

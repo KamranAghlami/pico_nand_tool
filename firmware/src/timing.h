@@ -24,10 +24,12 @@ typedef struct {
     uint16_t t_wb;    /* last WE# high -> first R/B# sample (tWB)                 */
     uint16_t t_rr;    /* R/B# high -> first RE# low         (tRR)                 */
     uint16_t t_ceh;   /* CE# high -> next CE# low / bus out (tCSD, tCHZ)          */
+    uint16_t t_adl;   /* last address WE# high -> data in   (tADL), program only  */
+    uint16_t t_ww;    /* WP# high -> setup command latch    (tWW), write only     */
     uint32_t rb_timeout_us; /* R/B# poll timeout            (tR, tRST)            */
 } timing_t;
 
-_Static_assert(PROTO_TIMING_FIELDS == 11, "timing_t field count must match the wire format");
+_Static_assert(PROTO_TIMING_FIELDS == 13, "timing_t field count must match the wire format");
 
 void timing_preset_default(timing_t *t);
 void timing_preset_slow(timing_t *t);

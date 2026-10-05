@@ -6,10 +6,14 @@ import random
 import struct
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 from .errors import FrameError, NandToolError, TransportError
 from .protocol import (
+    ARM_TOKEN,
+    BLOCKS,
     CRC_LEN,
+    ERASE_IGNORE_BAD_MARKER,
     END_FLAG,
     END_LEN,
     PAGE_LEN,
@@ -19,6 +23,7 @@ from .protocol import (
     RESP_HDR_LEN,
     TIMING_WIRE_LEN,
     TOTAL_PAGES,
+    WRITE_RESP_LEN,
     Cmd,
     PingInfo,
     Response,
@@ -31,7 +36,16 @@ from .protocol import (
 )
 from .transport import Transport
 
-__all__ = ["Client", "DeviceError", "FrameError", "ProtocolMismatch", "TransportError"]
+__all__ = [
+    "Client",
+    "DeviceError",
+    "FrameError",
+    "LostResponse",
+    "ProtocolMismatch",
+    "TransportError",
+    "WriteOpError",
+    "WriteResult",
+]
 
 
 def _name(enum, value: int) -> str:
@@ -50,8 +64,29 @@ class DeviceError(NandToolError):
         super().__init__(f"{_name(Cmd, cmd)}: {_name(Status, status)}")
 
 
+class WriteOpError(DeviceError):
+    """ERASE_BLOCK / PROGRAM_PAGE ran and failed: ERR_OP_FAILED (SR bit 0) or ERR_WP_STUCK (SR bit 7 = 0)."""
+
+    def __init__(self, cmd: int, status: int, sr: int, page: int):
+        self.sr = sr
+        self.page = page
+        super().__init__(cmd, status)
+        self.args = (f"{self}: SR {sr:02X}h at page {page}",)
+
+
+class LostResponse(TransportError):
+    """An erase/program request was sent but no valid response came back: it may or may not have run. Never re-send
+    it blindly (docs/PROTOCOL.md "Write mode"); re-do the whole block instead."""
+
+
 class ProtocolMismatch(NandToolError):
     pass
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    sr: int
+    busy_ns: int
 
 
 class Client:
@@ -110,10 +145,12 @@ class Client:
             if self.t.read(4096):
                 last = time.monotonic()
 
-    def request(self, cmd: int, args: bytes = b"") -> Response:
+    def request(self, cmd: int, args: bytes = b"", *, resend: bool = True) -> Response:
         """Send one request and return its single response, retrying on transport errors and ERR_CRC.
 
-        Only for single-response commands (every command except READ_PAGES); all of them are idempotent.
+        Only for single-response commands (every command except READ_PAGES). resend=False is for erase/program, which
+        are not safe to repeat: a lost or corrupted response raises LostResponse instead of re-sending (ERR_CRC is
+        still retried, since then nothing ran).
         """
         last_err: Exception | None = None
         for _ in range(self.retries + 1):
@@ -129,6 +166,10 @@ class Client:
             except (FrameError, TransportError) as e:
                 last_err = e
                 self.resync()
+                if not resend:
+                    raise LostResponse(
+                        f"{_name(Cmd, cmd)}: no valid response ({e}); the operation may or may not have run"
+                    ) from e
                 continue
             if resp.status == Status.ERR_CRC:
                 last_err = FrameError("device reported request CRC error")
@@ -194,6 +235,37 @@ class Client:
         if len(payload) != 1:
             raise FrameError(f"malformed READ_STATUS reply ({len(payload)} bytes)")
         return payload[0]
+
+    # ---- write mode (docs/PROTOCOL.md "Write mode") -------------------------------------------------------------
+
+    def arm_write(self, first_block: int, last_block: int, idle_timeout_s: int = 10) -> None:
+        """Arm erase/program for blocks [first_block, last_block] until idle_timeout_s pass without one."""
+        if not 0 <= first_block <= last_block < BLOCKS:
+            raise ValueError(f"block range {first_block}..{last_block} outside 0..{BLOCKS - 1}")
+        self.call(Cmd.ARM_WRITE, struct.pack("<IHHH", ARM_TOKEN, first_block, last_block, idle_timeout_s))
+
+    def disarm(self) -> None:
+        self.call(Cmd.DISARM)
+
+    def erase_block(self, block: int, *, ignore_bad_marker: bool = False) -> WriteResult:
+        flags = ERASE_IGNORE_BAD_MARKER if ignore_bad_marker else 0
+        return self._write_op(Cmd.ERASE_BLOCK, struct.pack("<HB", block, flags))
+
+    def program_page(self, page: int, data: bytes) -> WriteResult:
+        if len(data) != PAGE_LEN:
+            raise ValueError(f"a page is {PAGE_LEN} bytes, got {len(data)}")
+        return self._write_op(Cmd.PROGRAM_PAGE, struct.pack("<I", page) + data)
+
+    def _write_op(self, cmd: int, args: bytes) -> WriteResult:
+        resp = self.request(cmd, args, resend=False)
+        if resp.status not in (Status.OK, Status.ERR_OP_FAILED, Status.ERR_WP_STUCK):
+            raise DeviceError(cmd, resp.status)
+        if len(resp.payload) != WRITE_RESP_LEN:
+            raise FrameError(f"{_name(Cmd, cmd)} reply is {len(resp.payload)} bytes, expected {WRITE_RESP_LEN}")
+        sr, busy_ns = struct.unpack("<BI", resp.payload)
+        if resp.status != Status.OK:
+            raise WriteOpError(cmd, resp.status, sr, resp.page)
+        return WriteResult(sr, busy_ns)
 
     def read_pages(self, start: int, count: int) -> Iterator[tuple[int, bytes | None]]:
         """Stream pages [start, start + count): yields (page, 2112 bytes), or (page, None) when the device reported

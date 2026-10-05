@@ -5,7 +5,9 @@
 #include "crc32.h"
 #include "frame.h"
 #include "hardware/clocks.h"
+#include "hardware/watchdog.h"
 #include "nand_ops.h"
+#include "nand_write.h"
 #include "pico/bootrom.h"
 #include "pico/time.h"
 #include "tusb.h"
@@ -38,6 +40,7 @@ static bool usb_write_all(const uint8_t *p, uint32_t n, uint32_t my_session) {
         if (avail == 0) {
             tud_cdc_write_flush();
             tud_task();
+            watchdog_update(); /* waiting for the host to read is not a hang */
             continue;
         }
         uint32_t k = tud_cdc_write(p, n < avail ? n : avail);
@@ -67,6 +70,10 @@ static void send_status(const proto_req_t *r, uint8_t status) {
 }
 
 /* ---- commands -------------------------------------------------------------------------------------------- */
+
+static uint32_t cycles_to_ns(uint32_t cycles) {
+    return (uint32_t)((uint64_t)cycles * 1000000000u / clock_get_hz(clk_sys));
+}
 
 static void cmd_ping(const proto_req_t *r) {
     if (r->arg_len != 0) {
@@ -119,6 +126,7 @@ static void cmd_reset(const proto_req_t *r) {
         send_status(r, PROTO_ST_ERR_BAD_ARGS);
         return;
     }
+    nand_write_disarm(); /* PROTOCOL "Write mode": RESET disarms */
     uint32_t busy_cycles = 0;
     uint8_t st = nand_reset(&busy_cycles);
     if (st != PROTO_ST_OK) {
@@ -126,7 +134,7 @@ static void cmd_reset(const proto_req_t *r) {
         return;
     }
     uint8_t buf[4];
-    put_le32(buf, (uint32_t)((uint64_t)busy_cycles * 1000000000u / clock_get_hz(clk_sys)));
+    put_le32(buf, cycles_to_ns(busy_cycles));
     send_resp(r->cmd, r->seq, PROTO_ST_OK, PROTO_PAGE_NONE, buf, sizeof buf);
 }
 
@@ -166,9 +174,63 @@ static void cmd_read_param(const proto_req_t *r) {
     send_resp(r->cmd, r->seq, st, PROTO_PAGE_NONE, buf, st == PROTO_ST_OK ? sizeof buf : 0);
 }
 
+/* ---- write mode (docs/PROTOCOL.md "Write mode") ------------------------------------------------------------ */
+
+static void cmd_arm_write(const proto_req_t *r) {
+    if (r->arg_len != PROTO_ARM_LEN) {
+        send_status(r, PROTO_ST_ERR_BAD_ARGS);
+        return;
+    }
+    send_status(r, nand_write_arm(get_le32(&r->args[0]), get_le16(&r->args[4]), get_le16(&r->args[6]),
+                                  get_le16(&r->args[8])));
+}
+
+static void cmd_disarm(const proto_req_t *r) {
+    if (r->arg_len != 0) {
+        send_status(r, PROTO_ST_ERR_BAD_ARGS);
+        return;
+    }
+    nand_write_disarm();
+    send_status(r, PROTO_ST_OK);
+}
+
+/* OK, ERR_OP_FAILED and ERR_WP_STUCK carry u8 sr + u32 busy_ns; every other status has no payload. */
+static void send_write_result(const proto_req_t *r, uint32_t page, uint8_t st, uint8_t sr, uint32_t busy_cycles) {
+    uint8_t buf[PROTO_WRITE_RESP_LEN];
+    bool with_sr = st == PROTO_ST_OK || st == PROTO_ST_ERR_OP_FAILED || st == PROTO_ST_ERR_WP_STUCK;
+    buf[0] = sr;
+    put_le32(&buf[1], cycles_to_ns(busy_cycles));
+    send_resp(r->cmd, r->seq, st, page, buf, with_sr ? sizeof buf : 0);
+}
+
+static void cmd_erase_block(const proto_req_t *r) {
+    uint16_t block = r->arg_len == PROTO_ERASE_LEN ? get_le16(&r->args[0]) : 0;
+    uint8_t flags = r->arg_len == PROTO_ERASE_LEN ? r->args[2] : 0;
+    if (r->arg_len != PROTO_ERASE_LEN || block >= PROTO_BLOCKS || (flags & ~PROTO_ERASE_IGNORE_BAD_MARKER)) {
+        send_status(r, PROTO_ST_ERR_BAD_ARGS);
+        return;
+    }
+    uint8_t sr = 0;
+    uint32_t busy = 0;
+    uint8_t st = nand_erase_block(block, flags & PROTO_ERASE_IGNORE_BAD_MARKER, &sr, &busy);
+    send_write_result(r, (uint32_t)block * PROTO_PAGES_PER_BLOCK, st, sr, busy);
+}
+
+static void cmd_program_page(const proto_req_t *r) {
+    uint32_t page = r->arg_len == 4 + PROTO_PAGE_LEN ? get_le32(&r->args[0]) : 0;
+    if (r->arg_len != 4 + PROTO_PAGE_LEN || page >= PROTO_TOTAL_PAGES) {
+        send_status(r, PROTO_ST_ERR_BAD_ARGS);
+        return;
+    }
+    uint8_t sr = 0;
+    uint32_t busy = 0;
+    uint8_t st = nand_program_page(page, &r->args[4], &sr, &busy);
+    send_write_result(r, page, st, sr, busy);
+}
+
 /* ---- READ_PAGES stream (docs/PROTOCOL.md "READ_PAGES stream") --------------------------------------------- */
 
-static void poll_input(void (*on_req)(const proto_req_t *r));
+static void poll_input(void (*on_req)(const proto_req_t *r), proto_req_t *req);
 
 static bool stream_abort;
 static uint8_t stream_abort_seq;
@@ -198,8 +260,10 @@ static void cmd_read_pages(const proto_req_t *r) {
     stream_abort = false;
 
     while (sent < count) {
+        static proto_req_t stream_req; /* static: 2 KB. Not the top-level buffer, which still holds *r */
         tud_task();
-        poll_input(stream_on_req);
+        watchdog_update();
+        poll_input(stream_on_req, &stream_req);
         if (session != my_session || !tud_cdc_connected())
             return; /* DTR dropped: the host is gone, nobody to send the end frame to */
         if (stream_abort)
@@ -260,6 +324,18 @@ static void dispatch(const proto_req_t *r) {
     case PROTO_CMD_ABORT:
         cmd_abort(r);
         break;
+    case PROTO_CMD_ARM_WRITE:
+        cmd_arm_write(r);
+        break;
+    case PROTO_CMD_DISARM:
+        cmd_disarm(r);
+        break;
+    case PROTO_CMD_ERASE_BLOCK:
+        cmd_erase_block(r);
+        break;
+    case PROTO_CMD_PROGRAM_PAGE:
+        cmd_program_page(r);
+        break;
     default:
         /* Includes BUS_TEST: M1 was dropped by the user (no logic analyzer; the chip-level checks covered the
          * wiring). */
@@ -277,8 +353,9 @@ static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 static uint8_t rx_buf[64];
 static uint32_t rx_len, rx_pos;
 
-/* Read pending bytes and hand every complete, CRC-valid request to on_req. A bad CRC gets ERR_CRC here. */
-static void poll_input(void (*on_req)(const proto_req_t *r)) {
+/* Read pending bytes and hand every complete, CRC-valid request to on_req, parsed into *req. A bad CRC gets ERR_CRC
+ * here. */
+static void poll_input(void (*on_req)(const proto_req_t *r), proto_req_t *req) {
     if (!frame_parser_idle(&parser) && now_ms() - last_rx_ms > PROTO_REQ_TIMEOUT_MS)
         frame_parser_reset(&parser); /* stale partial request */
 
@@ -291,13 +368,12 @@ static void poll_input(void (*on_req)(const proto_req_t *r)) {
             last_rx_ms = now_ms(); /* fresh: a dispatch may have blocked on USB for a while */
             continue;
         }
-        proto_req_t req;
-        switch (frame_parser_feed(&parser, rx_buf[rx_pos++], &req)) {
+        switch (frame_parser_feed(&parser, rx_buf[rx_pos++], req)) {
         case FRAME_OK:
-            on_req(&req);
+            on_req(req);
             break;
         case FRAME_BAD_CRC:
-            send_status(&req, PROTO_ST_ERR_CRC);
+            send_status(req, PROTO_ST_ERR_CRC);
             break;
         case FRAME_NEED_MORE:
             break;
@@ -305,7 +381,10 @@ static void poll_input(void (*on_req)(const proto_req_t *r)) {
     }
 }
 
-void protocol_poll(void) { poll_input(dispatch); }
+void protocol_poll(void) {
+    static proto_req_t req; /* static: 2 KB, too big for the 2 KB main stack */
+    poll_input(dispatch, &req);
+}
 
 /* DTR changed: the host opened or closed the port. Whatever is left from the previous session is stale: a partly
  * sent response in the TX FIFO (TinyUSB only clears it on bus reset), unread request bytes, a partial request. */
@@ -317,6 +396,7 @@ void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts) {
         return; /* RTS-only change */
     last_dtr = dtr;
     session++; /* makes an in-progress usb_write_all() give up instead of finishing an old frame */
+    nand_write_disarm(); /* PROTOCOL "Write mode": a new or closed session is never armed */
     tud_cdc_write_clear();
     tud_cdc_read_flush();
     rx_len = rx_pos = 0;

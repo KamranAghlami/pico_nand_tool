@@ -14,15 +14,15 @@ from math import ceil
 
 from .errors import FrameError
 
-PROTO_VERSION = 1
+PROTO_VERSION = 2
 
 MAGIC_REQ = 0xA5
 MAGIC_RESP = 0x5A
 
-REQ_HDR_LEN = 4
+REQ_HDR_LEN = 5
 RESP_HDR_LEN = 10
 CRC_LEN = 4
-MAX_ARGS = 32
+MAX_ARGS = 2116  # PROGRAM_PAGE: u32 page + 2112 bytes
 MAX_PAYLOAD = 2112
 REQ_TIMEOUT_MS = 100
 
@@ -33,6 +33,18 @@ PARAM_LEN = 768  # READ_PARAM payload: 3 x 256-byte parameter page copies
 PAGE_LEN = 2112  # READ_PAGES page frame payload: 2048 data + 64 spare
 TOTAL_PAGES = 131072  # READ_PAGES: start + count must not exceed this
 END_LEN = 8  # READ_PAGES end frame payload: u32 pages_sent, u32 pages_failed
+PAGES_PER_BLOCK = 64
+BLOCKS = 2048
+
+# Write mode (docs/PROTOCOL.md "Write mode")
+ARM_TOKEN = 0x4D524157  # bytes 57 41 52 4D, "WARM"
+ARM_IDLE_MAX_S = 60
+ARM_LEN = 10  # ARM_WRITE args: u32 token, u16 first_block, u16 last_block, u16 idle_timeout_s
+ERASE_LEN = 3  # ERASE_BLOCK args: u16 block, u8 flags
+ERASE_IGNORE_BAD_MARKER = 0x01
+WRITE_RESP_LEN = 5  # ERASE_BLOCK / PROGRAM_PAGE payload: u8 sr, u32 busy_ns
+PROGRAM_TIMEOUT_US = 2000
+ERASE_TIMEOUT_US = 20000
 
 
 class Cmd(IntEnum):
@@ -45,6 +57,10 @@ class Cmd(IntEnum):
     READ_PARAM = 0x07
     READ_PAGES = 0x08
     ABORT = 0x09
+    ARM_WRITE = 0x0A
+    DISARM = 0x0B
+    ERASE_BLOCK = 0x0C
+    PROGRAM_PAGE = 0x0D
 
 
 class Status(IntEnum):
@@ -56,6 +72,10 @@ class Status(IntEnum):
     ERR_ABORTED = 0x05
     ERR_BUSY = 0x06
     ERR_TIMING_FLOOR = 0x07
+    ERR_NOT_ARMED = 0x08
+    ERR_BAD_BLOCK = 0x09
+    ERR_OP_FAILED = 0x0A
+    ERR_WP_STUCK = 0x0B
 
 
 class TimingMode(IntEnum):
@@ -65,9 +85,9 @@ class TimingMode(IntEnum):
     CUSTOM = 3
 
 
-TIMING_FIELDS = 11
-TIMING_WIRE_LEN = 26
-TIMING_DEFAULT_CYCLES = (6, 3, 4, 3, 15, 8, 3, 25, 25, 6, 8)
+TIMING_FIELDS = 13
+TIMING_WIRE_LEN = 30
+TIMING_DEFAULT_CYCLES = (6, 3, 4, 3, 15, 8, 3, 25, 25, 6, 8, 18, 25)
 TIMING_SLOW_CYCLES = 125
 TIMING_RB_TIMEOUT_US = 1000
 TIMING_RB_TIMEOUT_MAX_US = 100000
@@ -88,11 +108,13 @@ FLOOR_TRHW_NS = 100
 FLOOR_TWB_NS = 100
 FLOOR_TRR_NS = 20
 FLOOR_TCHZ_NS = 30
+FLOOR_TADL_NS = 70
+FLOOR_TWW_NS = 100
 FLOOR_INPUT_SYNC_CYCLES = 2
 FLOOR_RB_TIMEOUT_US = 25
 
 _RESP_HDR = struct.Struct("<BBBBIH")
-_TIMING = struct.Struct("<11HI")
+_TIMING = struct.Struct("<13HI")
 assert _TIMING.size == TIMING_WIRE_LEN
 
 
@@ -104,7 +126,7 @@ def crc32(data: bytes) -> int:
 def encode_request(cmd: int, seq: int, args: bytes = b"") -> bytes:
     if len(args) > MAX_ARGS:
         raise ValueError(f"args too long ({len(args)} > {MAX_ARGS})")
-    body = bytes((MAGIC_REQ, cmd & 0xFF, seq & 0xFF, len(args))) + args
+    body = struct.pack("<BBBH", MAGIC_REQ, cmd & 0xFF, seq & 0xFF, len(args)) + args
     return body + struct.pack("<I", crc32(body))
 
 
@@ -175,6 +197,8 @@ class Timing:
     t_wb: int
     t_rr: int
     t_ceh: int
+    t_adl: int
+    t_ww: int
     rb_timeout_us: int
 
     @classmethod
@@ -214,6 +238,8 @@ class Timing:
             and t.t_wb >= c(FLOOR_TWB_NS)
             and t.t_rr >= c(FLOOR_TRR_NS)
             and t.t_ceh >= c(FLOOR_TCHZ_NS)
+            and t.t_adl >= c(FLOOR_TADL_NS)
+            and t.t_ww >= c(FLOOR_TWW_NS)
             and FLOOR_RB_TIMEOUT_US <= t.rb_timeout_us <= TIMING_RB_TIMEOUT_MAX_US
         )
 

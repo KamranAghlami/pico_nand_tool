@@ -64,13 +64,15 @@ uint8_t nand_read_param(uint8_t *buf, uint32_t n) {
     return ready ? PROTO_ST_OK : PROTO_ST_ERR_RB_TIMEOUT;
 }
 
-uint8_t nand_read_page(uint32_t page, uint8_t *buf, uint32_t n) {
+uint8_t nand_read_page(uint32_t page, uint8_t *buf, uint32_t n) { return nand_read_column(page, 0, buf, n); }
+
+uint8_t nand_read_column(uint32_t page, uint16_t column, uint8_t *buf, uint32_t n) {
     /* §3.1, Fig. 6.1. Table 5 (2 Gb, x8): column = 2 cycles (CA0-CA11; 0 = start of page), row = 3 cycles, LSB first:
      * PA0-PA5 page in block, PLA0 plane, BA0-BA9 block. Together that is just the page index 0..131071. */
     nand_bus_select();
     NAND_CMD(NAND_CMD_READ_1);
-    nand_bus_addr(0x00);                  /* Col. Add. 1 */
-    nand_bus_addr(0x00);                  /* Col. Add. 2 */
+    nand_bus_addr((uint8_t)column);        /* Col. Add. 1: CA0-CA7 */
+    nand_bus_addr((uint8_t)(column >> 8)); /* Col. Add. 2: CA8-CA11 */
     nand_bus_addr((uint8_t)page);         /* Row Add. 1: PA0-PA5, PLA0, BA0 */
     nand_bus_addr((uint8_t)(page >> 8));  /* Row Add. 2: BA1-BA8 */
     nand_bus_addr((uint8_t)(page >> 16)); /* Row Add. 3: BA9, rest low */

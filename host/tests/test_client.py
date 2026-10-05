@@ -12,18 +12,18 @@ from nand_tool.protocol import Cmd, Status, Timing, TimingMode, encode_request, 
 
 def test_ping(client, dev):
     info = client.ping()
-    assert info.proto_version == 1
-    assert info.fw_version == (0, 1, 0)
+    assert info.proto_version == 2
+    assert info.fw_version == (0, 2, 0)
     assert info.clk_hz == 125_000_000
     assert info.version_string.startswith("pico-nand-tool ")
     assert len(dev.requests) == 1
 
 
 def test_ping_protocol_mismatch():
-    c = Client(FakeDevice(proto_version=2), timeout=0.05, quiet_s=0.005)
+    c = Client(FakeDevice(proto_version=1), timeout=0.05, quiet_s=0.005)
     with pytest.raises(ProtocolMismatch):
         c.ping()
-    assert c.ping(check_version=False).proto_version == 2
+    assert c.ping(check_version=False).proto_version == 1
 
 
 def test_timing_presets(client, dev):
@@ -126,7 +126,7 @@ def test_abort_without_stream(client):
 @pytest.mark.parametrize("fault", list(Fault))
 def test_recovers_from_single_transport_fault(client, dev, fault):
     dev.inject(fault)
-    assert client.ping().fw_version == (0, 1, 0)
+    assert client.ping().fw_version == (0, 2, 0)
     # every fault except STALE_FRAME (skipped by seq matching) costs exactly one retry
     expected_attempts = 1 if fault is Fault.STALE_FRAME else 2
     pings = [r for r in dev.requests if r[0] == Cmd.PING]

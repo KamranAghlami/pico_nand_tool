@@ -1,9 +1,10 @@
-"""`nandtool` command line: ping, timing, id, status, param, read, dump, compare, reconcile, split, badblocks
-(docs/SPEC.md). bus-test (M1) is not implemented: M1 was skipped."""
+"""`nandtool` command line: ping, timing, id, status, param, read, dump, compare, reconcile, split, badblocks, and
+write mode: erase, program, write, interlock-test (docs/SPEC.md). bus-test (M1) is not implemented: M1 was skipped."""
 
 from __future__ import annotations
 
 import argparse
+import struct
 import sys
 import time
 from pathlib import Path
@@ -11,7 +12,7 @@ from collections import Counter
 from collections.abc import Callable
 
 from . import __version__
-from .client import Client
+from .client import Client, DeviceError
 from .compare import CompareError, diff_pages, page_count
 from .dump import DEFAULT_RETRIES, Progress, dump, load_meta
 from .errors import NandToolError
@@ -33,8 +34,26 @@ from .geometry import (
 from .onfi import PARAM_PAGE_LEN, ParamPage, split_copies
 from .postproc import MARKER_OFFSET, scan_bad_blocks, split
 from .reconcile import DEFAULT_READS, default_min_agree, reconcile
-from .protocol import PROTO_VERSION, TimingMode
+from .protocol import PROTO_VERSION, Cmd, Status, TimingMode
 from .transport import Transport, open_transport
+from .write import (
+    ARM_IDLE_S,
+    BLOCKS,
+    ERASED_PAGE,
+    MAP_1TO1,
+    MAP_SKIP_BAD,
+    BlockDone,
+    Image,
+    build_plan,
+    check_backup,
+    disarm_quietly,
+    erase_block,
+    read_block,
+    read_markers,
+    read_range,
+    run_plan,
+    sidecar_path,
+)
 
 
 def cmd_ping(client: Client, args: argparse.Namespace) -> int:
@@ -364,9 +383,68 @@ def cmd_split(client: Client | None, args: argparse.Namespace) -> int:
     return 0
 
 
+def _ranges(nums: list[int]) -> str:
+    """[1, 2, 3, 7] -> "1..3 7"."""
+    out = []
+    for n in nums:
+        if out and out[-1][1] == n - 1:
+            out[-1][1] = n
+        else:
+            out.append([n, n])
+    return " ".join(f"{a}..{b}" if b > a else str(a) for a, b in out)
+
+
+def _badblocks_device(client: Client, args: argparse.Namespace) -> int:
+    first = args.first_block or 0
+    count = args.count if args.count is not None else BLOCKS - first
+    if first + count > BLOCKS:
+        print(f"error: blocks {first}..{first + count - 1} run past the last block ({BLOCKS - 1})", file=sys.stderr)
+        return 1
+    idb = client.read_id()
+    if idb != EXPECTED_ID:
+        print(f"error: READ_ID is {_hex(idb)}, expected {_hex(EXPECTED_ID)} (check the socket)", file=sys.stderr)
+        return 1
+    print(f"scanned  : chip blocks {first}..{first + count - 1} ({count} blocks); rule: datasheet §9.2, spare byte 0 "
+          f"(offset {MARKER_OFFSET}) of pages 0, 1 and {PAGES_PER_BLOCK - 1} of each block must be FFh")
+    bad = []
+    for k, b in enumerate(range(first, first + count)):
+        m = read_markers(client, b)
+        if m:
+            bad.append(b)
+            marks = ", ".join(f"page {p}: {v:02X}h" for p, v in sorted(m.items()))
+            print(("\r" if sys.stderr.isatty() else "") + f"bad      : block {b}: {marks}")
+        if sys.stderr.isatty() and k % 16 == 0:
+            print(f"\r  {k}/{count} blocks", end="", file=sys.stderr, flush=True)
+    if sys.stderr.isatty():
+        print("\r" + " " * 30 + "\r", end="", file=sys.stderr)
+    print(f"result   : {len(bad)} bad block{'s' if len(bad) != 1 else ''}{': ' + _ranges(bad) if bad else ''}")
+    return 0
+
+
+def _blank_blocks(image: Path, start: int) -> int:
+    img = Image.open(image, start)
+    blank = [b for b in range(img.first_block, img.first_block + img.blocks)
+             if all(p == ERASED_PAGE for p in img.block(b))]
+    print(f"scanned  : blocks {img.first_block}..{img.first_block + img.blocks - 1} ({img.blocks} blocks) of {image}")
+    print(f"blank    : {len(blank)} block{'s' if len(blank) != 1 else ''} all FFh (data and spare)"
+          f"{': ' + _ranges(blank) if blank else ''}")
+    return 0
+
+
 def cmd_badblocks(client: Client | None, args: argparse.Namespace) -> int:
+    if args.device:
+        if args.image or args.blank:
+            print("error: --device scans the chip; it takes no IMAGE and no --blank", file=sys.stderr)
+            return 1
+        assert client is not None
+        return _badblocks_device(client, args)
+    if not args.image:
+        print("error: give an IMAGE, or --device to scan the chip", file=sys.stderr)
+        return 1
     image = Path(args.image)
     start = _start_page(image, args.start)
+    if args.blank:
+        return _blank_blocks(image, start)
     scan = scan_bad_blocks(image, start)
     if scan.blocks == 0:
         print("error: the image holds no whole block", file=sys.stderr)
@@ -389,6 +467,263 @@ def cmd_badblocks(client: Client | None, args: argparse.Namespace) -> int:
         print(f"WARNING  : more than the {max_bad} bad blocks the chip allows (param page bytes 103-104). On a used "
               "chip the previous system may have written spare byte 0, so these are not all factory marks.")
     return 0
+
+
+# ---- write mode (docs/WRITE_PROPOSAL.md §5) ---------------------------------------------------------------------
+
+
+def _ask(prompt: str) -> str | None:
+    """Read one line from the user, or None when stdin is not a terminal (scripts must pass --yes)."""
+    if not sys.stdin.isatty():
+        return None
+    try:
+        return input(prompt)
+    except EOFError:
+        return ""
+
+
+def _confirm(args: argparse.Namespace, phrase: str) -> bool:
+    if args.yes:
+        print(f"confirm  : --yes given (instead of typing {phrase!r})")
+        return True
+    answer = _ask(f'confirm  : type "{phrase}" to continue: ')
+    if answer is None:
+        print("error: stdin is not a terminal; pass --yes to confirm. Nothing was erased.", file=sys.stderr)
+        return False
+    if answer.strip() != phrase:
+        print("aborted  : confirmation did not match. Nothing was erased.")
+        return False
+    return True
+
+
+def _check_chip(client: Client) -> bool:
+    idb = client.read_id()
+    if idb != EXPECTED_ID:
+        print(f"error: READ_ID is {_hex(idb)}, expected {_hex(EXPECTED_ID)}: refusing to write (check the socket)",
+              file=sys.stderr)
+        return False
+    return True
+
+
+def _blocks_word(n: int) -> str:
+    return f"{n} BLOCK{'S' if n != 1 else ''}"
+
+
+def cmd_erase(client: Client, args: argparse.Namespace) -> int:
+    first, count = args.block, args.count
+    if first + count > BLOCKS:
+        print(f"error: blocks {first}..{first + count - 1} run past the last block ({BLOCKS - 1})", file=sys.stderr)
+        return 1
+    if not _check_chip(client):
+        return 1
+    blocks = range(first, first + count)
+    print(f"erase    : block{'s' if count > 1 else ''} {first}{f'..{blocks[-1]}' if count > 1 else ''} "
+          f"(pages {first * PAGES_PER_BLOCK}..{(blocks[-1] + 1) * PAGES_PER_BLOCK - 1})")
+    bad = {b: m for b in blocks if (m := read_markers(client, b))}  # §9.2: before any erase
+    for b, m in bad.items():
+        marks = ", ".join(f"page {p}: {v:02X}h" for p, v in sorted(m.items()))
+        print(f"bad      : block {b}: {marks}")
+    if bad and not args.ignore_bad_marker:
+        print("error: the range holds bad blocks (§9.2); nothing was erased. --ignore-bad-marker erases them anyway, "
+              "destroying the factory marking.", file=sys.stderr)
+        return 1
+    print("WARNING  : erasing destroys the data in these blocks. There is no undo; keep a dump.")
+    if not _confirm(args, f"ERASE {_blocks_word(count)}"):
+        return 1
+    for b in blocks:
+        erase_block(client, b, ignore_bad_marker=args.ignore_bad_marker)
+        left = sum(1 for p in read_block(client, b) if p != ERASED_PAGE)
+        if left:
+            print(f"block {b:<4}: erased, but {left} page(s) do not read all FFh: VERIFY FAILED")
+            print("result   : FAIL")
+            return 1
+        print(f"block {b:<4}: erased, verified all FFh")
+    print("result   : PASS")
+    return 0
+
+
+def cmd_program(client: Client, args: argparse.Namespace) -> int:
+    data = Path(args.infile).read_bytes()
+    if len(data) != PAGE_SIZE:
+        print(f"error: {args.infile} is {len(data)} bytes; a page is {PAGE_SIZE} (2048 data + 64 spare)",
+              file=sys.stderr)
+        return 1
+    if not _check_chip(client):
+        return 1
+    page = args.page
+    block = page // PAGES_PER_BLOCK
+    print(f"program  : page {page} (block {block}, page {page % PAGES_PER_BLOCK}) from {args.infile}")
+    if read_range(client, page, 1)[0] != ERASED_PAGE:
+        print(f"error: page {page} is not erased (not all FFh). Erase block {block} first; nothing was written.",
+              file=sys.stderr)
+        return 1
+    if data == ERASED_PAGE:
+        print("result   : nothing to do (the data is all FFh, which an erased page already holds)")
+        return 0
+    client.arm_write(block, block, ARM_IDLE_S)
+    try:
+        r = client.program_page(page, data)
+    finally:
+        disarm_quietly(client)
+    print(f"status   : {r.sr:02X}h, busy {r.busy_ns / 1000:.0f} us")
+    back = read_range(client, page, 1)[0]
+    if back != data:
+        diff = [o for o in range(PAGE_SIZE) if back[o] != data[o]]
+        print(f"verify   : FAILED, {len(diff)} bytes differ (first at offset {diff[0]})")
+        print("result   : FAIL")
+        return 1
+    print("verify   : readback identical")
+    print("result   : PASS")
+    return 0
+
+
+def cmd_write(client: Client, args: argparse.Namespace) -> int:
+    image = Image.open(Path(args.image), args.start)
+    first = args.first_block if args.first_block is not None else image.first_block
+    count = args.count if args.count is not None else image.first_block + image.blocks - first
+    mode = "all blocks" if args.all else "only-changed"
+    print(f"image    : {image.path} (blocks {image.first_block}..{image.first_block + image.blocks - 1})")
+    print(f"range    : image blocks {first}..{first + count - 1} ({count} blocks), {mode}, map {args.map}")
+    if not _check_chip(client):
+        return 1
+
+    def scan_progress(k: int, n: int) -> None:
+        if sys.stderr.isatty():
+            end = "\n" if k == n else ""
+            print(f"\r  planning: {k}/{n} blocks read", end=end, file=sys.stderr, flush=True)
+
+    plan = build_plan(client, image, first_block=first, count=count, mapping=args.map, only_changed=not args.all,
+                      fresh=args.fresh, progress=scan_progress)
+    if plan.resumed_block is not None:
+        print(f"resume   : an earlier run of this image stopped in block {plan.resumed_block}; it is re-written "
+              f"(--fresh ignores the earlier run's sidecar {sidecar_path(image.path).name})")
+    tb = sorted(plan.target_bad)
+    print(f"target   : {len(tb)} bad block{'s' if len(tb) != 1 else ''}{': ' + _ranges(tb) if tb else ''} "
+          f"(markers of {plan.scanned_blocks} blocks read before any erase)")
+    if plan.image_bad:
+        print(f"image    : {len(plan.image_bad)} block(s) marked bad in the image: {_ranges(sorted(plan.image_bad))} "
+              "(not written)")
+    writes = plan.to_write
+    pages = sum(e.pages for e in writes)
+    print(f"plan     : {len(writes)} block(s) to erase + program ({pages} pages; all-FFh pages are not programmed), "
+          f"{len(plan.by_action('same'))} identical (skipped), {len(plan.by_action('target-bad'))} blank on a bad "
+          f"target (skipped)")
+    if args.map == MAP_SKIP_BAD:
+        shifted = [e for e in plan.entries if e.target_block is not None and e.target_block != e.image_block]
+        if shifted:
+            e = shifted[0]
+            print(f"map      : {len(shifted)} image block(s) shifted past bad target blocks, starting with image "
+                  f"block {e.image_block} -> target block {e.target_block}")
+    for e in plan.conflicts:
+        print(f"CONFLICT : image block {e.image_block} has data ({e.pages} pages) but target block {e.target_block} "
+              "is bad")
+    if plan.conflicts:
+        print(f"error: {len(plan.conflicts)} conflict(s) with --map {MAP_1TO1}; nothing was written. "
+              f"--map {MAP_SKIP_BAD} shifts the image past bad blocks, if the original system expects that.",
+              file=sys.stderr)
+        return 1
+    if not writes:
+        print("result   : nothing to write; the chip already matches the image")
+        return 0
+    if args.dry_run:
+        for e in writes[:50]:
+            print(f"  would write image block {e.image_block} -> target block {e.target_block} ({e.pages} pages)"
+                  f"{' [' + e.reason + ']' if e.reason else ''}")
+        if len(writes) > 50:
+            print(f"  ... {len(writes) - 50} more")
+        print("dry run  : nothing was erased or written")
+        return 0
+
+    if args.backup:
+        bc = check_backup(client, Path(args.backup))
+        if bc.ok:
+            print(f"backup   : {args.backup}: {len(bc.sampled)} random non-blank pages match the chip")
+        else:
+            print(f"WARNING  : backup {args.backup}: {len(bc.mismatched)} of {len(bc.sampled)} sampled pages do NOT "
+                  "match the chip. It may not be a backup of THIS chip (or the chip was already changed).")
+    else:
+        print("WARNING  : no --backup given. Erased data cannot be recovered without a dump of this chip.")
+    print(f"WARNING  : {len(writes)} block(s) will be erased and rewritten. There is no undo.")
+    if not _confirm(args, f"ERASE {_blocks_word(len(writes))}"):
+        return 1
+
+    tty = sys.stderr.isatty()
+    t0 = time.monotonic()
+
+    def block_progress(d: BlockDone) -> None:
+        line = (f"block {d.entry.target_block:<4}: written ({d.programmed} pages), verified  [{d.index}/{d.total}, "
+                f"{_duration(time.monotonic() - t0)}]")
+        if tty:
+            print("\r" + line, end="\n" if d.index == d.total else "", file=sys.stderr, flush=True)
+        else:
+            print(line, flush=True)
+
+    n = run_plan(client, plan, progress=block_progress)
+    print(f"written  : {n} block(s) in {_duration(time.monotonic() - t0)}, every one verified by readback")
+    print(f"sidecar  : {sidecar_path(image.path).name}")
+    print("result   : PASS")
+    return 0
+
+
+def _expect(label: str, fn: Callable[[], object], status: Status) -> bool:
+    try:
+        fn()
+    except DeviceError as e:
+        ok = e.status == status
+        try:
+            got = Status(e.status).name
+        except ValueError:
+            got = f"0x{e.status:02X}"
+        print(f"{label:<44}: {got}{'' if ok else f' (expected {status.name})'}  {'OK' if ok else 'FAIL'}")
+        return ok
+    print(f"{label:<44}: OK (expected {status.name})  FAIL: THE COMMAND RAN")
+    return False
+
+
+def cmd_interlock_test(client: Client, args: argparse.Namespace) -> int:
+    """W2: every erase/program here must be refused before it reaches the chip. Only a blank block is used, so even
+    a broken interlock loses no data."""
+    b = args.block
+    if not _check_chip(client):
+        return 1
+    first = b * PAGES_PER_BLOCK
+    if any(p != ERASED_PAGE for p in read_block(client, b)):
+        print(f"error: block {b} is not blank (all FFh). The test only uses a blank block, so a broken interlock "
+              "cannot destroy data. Pick one with `badblocks IMAGE --blank`.", file=sys.stderr)
+        return 1
+    other = b + 1 if b + 1 < BLOCKS else b - 1
+    page = bytes(PAGE_SIZE)  # all 00h: would be visible if it were ever programmed
+    print(f"interlock: block {b} (blank), every request below must be refused")
+    NOT_ARMED, BAD_ARGS = Status.ERR_NOT_ARMED, Status.ERR_BAD_ARGS
+    results = []
+    client.disarm()
+    results.append(_expect("erase, never armed", lambda: client.erase_block(b), NOT_ARMED))
+    results.append(_expect("program, never armed", lambda: client.program_page(first, page), NOT_ARMED))
+    client.arm_write(other, other, ARM_IDLE_S)
+    results.append(_expect(f"erase, armed for block {other} only", lambda: client.erase_block(b), NOT_ARMED))
+    results.append(_expect(f"program, armed for block {other} only", lambda: client.program_page(first, page),
+                           NOT_ARMED))
+    client.disarm()
+    results.append(_expect("erase after DISARM", lambda: client.erase_block(b), NOT_ARMED))
+    client.arm_write(b, b, ARM_IDLE_S)
+    client.reset()
+    results.append(_expect("erase after RESET", lambda: client.erase_block(b), NOT_ARMED))
+    client.arm_write(b, b, 1)
+    time.sleep(1.5)
+    results.append(_expect("erase after the 1 s idle timeout", lambda: client.erase_block(b), NOT_ARMED))
+    bad_token = struct.pack("<IHHH", 0x12345678, b, b, ARM_IDLE_S)
+    results.append(_expect("ARM_WRITE with a wrong token", lambda: client.call(Cmd.ARM_WRITE, bad_token), BAD_ARGS))
+    results.append(_expect("erase after the wrong-token ARM_WRITE", lambda: client.erase_block(b), NOT_ARMED))
+    client.disarm()
+    sr = client.read_status()
+    wp_ok = not sr & SR_NOT_PROTECTED
+    wp = "low (protected)  OK" if wp_ok else "HIGH  FAIL"
+    print(f"{'status register':<44}: {sr:02X}h, WP# {wp}")
+    blank = all(p == ERASED_PAGE for p in read_block(client, b))
+    print(f"{f'block {b} afterwards':<44}: {'still blank' if blank else 'CHANGED'}  {'OK' if blank else 'FAIL'}")
+    ok = all(results) and wp_ok and blank
+    print("result   : PASS" if ok else "result   : FAIL")
+    return 0 if ok else 1
 
 
 def _positive_int(text: str) -> int:
@@ -421,7 +756,7 @@ def _block_index(text: str) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="nandtool", description="Pico NAND Tool host (read-only NAND dumper)")
+    p = argparse.ArgumentParser(prog="nandtool", description="Pico NAND Tool host (raw NAND dumper and writer)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__} (protocol v{PROTO_VERSION})")
     p.add_argument("--port", help="serial port (default: auto-detect by USB VID:PID 2E8A:000A)")
     p.add_argument("--timeout", type=float, default=1.0, help="per-response timeout in seconds (default 1.0)")
@@ -503,11 +838,52 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true", help="overwrite existing outputs")
     sp.set_defaults(func=cmd_split, needs_device=False)
 
-    sp = sub.add_parser("badblocks", help="factory bad-block scan of an image (datasheet §9.2)")
+    sp = sub.add_parser("badblocks", help="factory bad-block scan of an image or of the chip (datasheet §9.2)")
+    sp.add_argument("image", nargs="?")
+    sp.add_argument("--start", type=_page_index, metavar="N", help="chip page of the first image page (default: "
+                    "from the sidecar, else 0)")
+    sp.add_argument("--blank", action="store_true", help="list the image's blocks that are all FFh instead")
+    sp.add_argument("--device", action="store_true", help="scan the chip's markers live instead of an image")
+    sp.add_argument("--first-block", type=_block_index, metavar="B", help="with --device: first block (default 0)")
+    sp.add_argument("--count", type=_positive_int, metavar="N", help="with --device: number of blocks")
+    sp.set_defaults(func=cmd_badblocks, needs_device=lambda a: a.device)
+
+    # ---- write mode ----
+    sp = sub.add_parser("erase", help="erase blocks (typed confirmation), then verify they read all FFh")
+    sp.add_argument("--block", type=_block_index, required=True, metavar="B", help="first block (0..2047)")
+    sp.add_argument("--count", type=_positive_int, default=1, metavar="N", help="number of blocks (default 1)")
+    sp.add_argument("--ignore-bad-marker", action="store_true",
+                    help="erase blocks marked bad too (destroys the factory marking, §9.2)")
+    sp.add_argument("--yes", action="store_true", help="skip the typed confirmation (for scripts)")
+    sp.set_defaults(func=cmd_erase)
+
+    sp = sub.add_parser("program", help="program one erased page from a 2112-byte file, then verify by readback")
+    sp.add_argument("--page", type=_page_index, required=True, metavar="N", help="page (0..131071)")
+    sp.add_argument("--in", dest="infile", required=True, metavar="FILE", help="2112 bytes: 2048 data + 64 spare")
+    sp.set_defaults(func=cmd_program)
+
+    sp = sub.add_parser("write", help="write a raw image: erase + program changed blocks, verify each by readback")
     sp.add_argument("image")
     sp.add_argument("--start", type=_page_index, metavar="N", help="chip page of the first image page (default: "
                     "from the sidecar, else 0)")
-    sp.set_defaults(func=cmd_badblocks, needs_device=False)
+    sp.add_argument("--first-block", type=_block_index, metavar="B", help="first image block to write (chip "
+                    "numbering; default: the image's first)")
+    sp.add_argument("--count", type=_positive_int, metavar="N", help="number of image blocks (default: to the end)")
+    sp.add_argument("--map", choices=(MAP_1TO1, MAP_SKIP_BAD), default=MAP_1TO1,
+                    help="image block -> target block: 1:1 (default; refuses if a bad target block would get data) "
+                    "or skip-bad (shift past bad target blocks)")
+    sp.add_argument("--all", action="store_true", help="rewrite every block, not only the ones that differ")
+    sp.add_argument("--backup", metavar="DUMP", help="a dump of this chip; random pages are checked against it")
+    sp.add_argument("--dry-run", action="store_true", help="read and plan, then stop without erasing anything")
+    sp.add_argument("--fresh", action="store_true", help="ignore an unfinished earlier run's sidecar (e.g. a "
+                    "different chip)")
+    sp.add_argument("--yes", action="store_true", help="skip the typed confirmation (for scripts)")
+    sp.set_defaults(func=cmd_write)
+
+    sp = sub.add_parser("interlock-test", help="W2: check that erase/program are refused unless armed (uses one "
+                        "blank block)")
+    sp.add_argument("--block", type=_block_index, required=True, metavar="B", help="a block that is all FFh")
+    sp.set_defaults(func=cmd_interlock_test)
     return p
 
 
@@ -515,7 +891,8 @@ def main(argv: list[str] | None = None, transport_factory: Callable[[str | None]
     args = build_parser().parse_args(argv)
     transport = None
     try:
-        if not getattr(args, "needs_device", True):
+        needs_device = getattr(args, "needs_device", True)
+        if not (needs_device(args) if callable(needs_device) else needs_device):
             return args.func(None, args)
         transport = (transport_factory or open_transport)(args.port)
         return args.func(Client(transport, timeout=args.timeout), args)

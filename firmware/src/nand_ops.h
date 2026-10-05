@@ -23,4 +23,7 @@ uint8_t nand_read_param(uint8_t *buf, uint32_t n);
  * Fig. 6.1). n = 2112 is the whole page: 2048 data + 64 spare. */
 uint8_t nand_read_page(uint32_t page, uint8_t *buf, uint32_t n);
 
+/* The same Page Read, starting at column `column` (0..2111) instead of 0. */
+uint8_t nand_read_column(uint32_t page, uint16_t column, uint8_t *buf, uint32_t n);
+
 #endif

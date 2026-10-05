@@ -24,8 +24,9 @@ jobs:
       - uses: actions/checkout@v7
 
       # Always runs: the safety gate must never be skippable. Host-compiled, no SDK needed: unit tests of the pure
-      # modules (crc32, frame, timing) and the opcode gate. Allowed opcodes must compile; NAND_CMD(0x80),
-      # non-constant opcodes and direct calls to the latch must be rejected.
+      # modules (crc32, frame, timing), the opcode gate (each opcode only through its own gate; NAND_CMD(0x80),
+      # NAND_WCMD(0x85), non-constant opcodes, direct latch calls and write-path use outside nand_write.c rejected)
+      # and the WP# guard (raised only in nand_bus_write_window_open).
       - name: Firmware host tests + opcode safety gate
         run: make -C firmware/tests check
 

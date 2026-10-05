@@ -17,12 +17,14 @@ def test_crc32_check_value():
 
 def test_encode_request_layout():
     f = P.encode_request(Cmd.READ_PAGES, 7, b"\x10\x20\x30")
-    assert f[:4] == bytes((0xA5, 0x08, 7, 3))
-    assert f[4:7] == b"\x10\x20\x30"
-    assert struct.unpack("<I", f[7:]) == (P.crc32(f[:7]),)
-    assert len(P.encode_request(Cmd.PING, 1)) == 8
+    assert f[:5] == bytes((0xA5, 0x08, 7, 3, 0))  # u16 arg_len (v2)
+    assert f[5:8] == b"\x10\x20\x30"
+    assert struct.unpack("<I", f[8:]) == (P.crc32(f[:8]),)
+    assert len(P.encode_request(Cmd.PING, 1)) == 9
+    big = P.encode_request(Cmd.PROGRAM_PAGE, 1, bytes(2116))
+    assert big[3:5] == bytes((0x44, 0x08)) and len(big) == 5 + 2116 + 4
     with pytest.raises(ValueError):
-        P.encode_request(Cmd.PING, 1, bytes(33))
+        P.encode_request(Cmd.PING, 1, bytes(2117))
 
 
 def test_response_roundtrip_and_layout():
@@ -48,8 +50,9 @@ def test_decode_rejects_corruption():
 
 def test_timing_wire_format():
     t = Timing.default()
-    assert len(t.pack()) == P.TIMING_WIRE_LEN == 26
+    assert len(t.pack()) == P.TIMING_WIRE_LEN == 30
     assert t.pack()[:2] == b"\x06\x00" and t.pack()[-4:] == struct.pack("<I", 1000)
+    assert (t.t_adl, t.t_ww) == (18, 25) and t.pack()[22:26] == bytes((18, 0, 25, 0))
     assert Timing.unpack(t.pack()) == t
     with pytest.raises(FrameError):
         Timing.unpack(t.pack()[:-1])
@@ -58,7 +61,8 @@ def test_timing_wire_format():
 def test_timing_presets_and_floors():
     assert Timing.default().meets_floors(CLK)
     assert Timing.slow().meets_floors(CLK)
-    for field, bad, good in [("t_wp", 1, 2), ("t_rea", 4, 5), ("t_whr", 7, 8), ("t_rhw", 12, 13), ("t_ceh", 3, 4)]:
+    for field, bad, good in [("t_wp", 1, 2), ("t_rea", 4, 5), ("t_whr", 7, 8), ("t_rhw", 12, 13), ("t_ceh", 3, 4),
+                            ("t_adl", 8, 9), ("t_ww", 12, 13)]:
         t = Timing.default()
         setattr(t, field, bad)
         assert not t.meets_floors(CLK), field
@@ -72,9 +76,9 @@ def test_timing_presets_and_floors():
 
 
 def test_ping_info_unpack():
-    payload = struct.pack("<BBBBI", 1, 0, 1, 0, CLK) + b"pico-nand-tool 0.1.0 (g123)"
+    payload = struct.pack("<BBBBI", 2, 0, 2, 0, CLK) + b"pico-nand-tool 0.2.0 (g123)"
     info = PingInfo.unpack(payload)
-    assert info == PingInfo(1, (0, 1, 0), CLK, "pico-nand-tool 0.1.0 (g123)")
+    assert info == PingInfo(2, (0, 2, 0), CLK, "pico-nand-tool 0.2.0 (g123)")
 
 
 # ---- firmware/host constant sync ---------------------------------------------------------------------------

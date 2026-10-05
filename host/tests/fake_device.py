@@ -1,7 +1,7 @@
 """Fake Pico NAND Tool: simulates the firmware's wire protocol in-process and implements the Transport interface.
 
-Mirrors the firmware as of milestone M4: everything except BUS_TEST (which answers ERR_UNKNOWN_CMD, like the real M4
-firmware). READ_PAGES streams lazily: page frames are produced as the host reads them, so ABORT and ERR_BUSY interleave
+Mirrors the firmware as of protocol v2 (write mode): everything except BUS_TEST (which answers ERR_UNKNOWN_CMD, like
+the real firmware). READ_PAGES streams lazily: page frames are produced as the host reads them, so ABORT and ERR_BUSY interleave
 between frames as on the real device.
 
 The simulated chip is an S34ML02G100 with WP# low. Hardware faults: chip_id (e.g. all FFh = no chip), wp_high
@@ -14,26 +14,43 @@ NAND image: page_data(p) is deterministic synthetic data (every 5th page erased 
 the first read; default: every 2nd read); rb_timeouts {page: n} makes the next n
 reads of that page report ERR_RB_TIMEOUT; page_faults {page: Fault} corrupts that page's frame in transit, once.
 
+Write mode (docs/PROTOCOL.md "Write mode"): the chip is a real NAND state model. Pages live in `pages` (unset pages
+read as page_data(p)); erase sets a block to FFh; program ANDs the data in (bits only go 1 -> 0) and counts programs
+per page since the last erase (`nop`; more than 4 is recorded in `nop_violations`). `bad_blocks` is the set of
+factory bad blocks (spare byte 0 of page 0 reads 00h). Arming follows the firmware (token, range, idle timeout on
+`clock()`, disarm on errors / RESET). `ops` logs every erase and program that reached the "chip". Faults:
+erase_fail / program_fail (blocks / pages that end with SR fail), erase_timeout / program_timeout (R/B# timeout),
+wp_stuck (SR bit 7 stays 0, nothing changes).
+
 Transport faults can be injected with inject(). Each queued fault applies to the next non-ABORT request received
-(ABORTs are the client's own recovery traffic, docs/PROTOCOL.md "Host recovery rule").
+(ABORTs are the client's own recovery traffic, docs/PROTOCOL.md "Host recovery rule"). cmd_faults[cmd] does the same
+for the next requests with that command only.
 """
 
 from __future__ import annotations
 
 import random
 import struct
+import time
 from dataclasses import dataclass
 from enum import Enum, auto
 
 from golden_param import GOLDEN_PARAM_X3
 
 from nand_tool.protocol import (
+    ARM_IDLE_MAX_S,
+    ARM_LEN,
+    ARM_TOKEN,
+    BLOCKS,
     CRC_LEN,
+    ERASE_IGNORE_BAD_MARKER,
+    ERASE_LEN,
     END_FLAG,
     MAGIC_REQ,
     MAX_ARGS,
     PAGE_LEN,
     PAGE_NONE,
+    PAGES_PER_BLOCK,
     PROTO_VERSION,
     REQ_HDR_LEN,
     TIMING_WIRE_LEN,
@@ -81,8 +98,8 @@ class FakeDevice:
         self,
         *,
         clk_hz: int = 125_000_000,
-        fw_version: tuple[int, int, int] = (0, 1, 0),
-        version_string: str = "pico-nand-tool 0.1.0 (fake)",
+        fw_version: tuple[int, int, int] = (0, 2, 0),
+        version_string: str = "pico-nand-tool 0.2.0 (fake)",
         proto_version: int = PROTO_VERSION,
         chip_id: bytes = bytes.fromhex("01DA909544"),
         onfi: bytes = b"ONFI",
@@ -112,11 +129,26 @@ class FakeDevice:
         self.page_faults: dict[int, Fault] = {}
         self.page_reads: dict[int, int] = {}  # page -> number of times read from the array
         self.flip_on = lambda page, n: n % 2 == 0
+        # write mode
+        self.pages: dict[int, bytes] = {}
+        self.bad_blocks: set[int] = set()
+        self.nop: dict[int, int] = {}
+        self.nop_violations: list[int] = []
+        self.ops: list[tuple[str, int]] = []
+        self.erase_fail: set[int] = set()
+        self.program_fail: set[int] = set()
+        self.erase_timeout: set[int] = set()
+        self.program_timeout: set[int] = set()
+        self.wp_stuck = False
+        self.armed: tuple[int, int, float] | None = None  # (first_block, last_block, idle_s)
+        self.last_use = 0.0
+        self.clock = time.monotonic
         self._stream: _Stream | None = None
         self.sr = self._sr_after_reset()  # power-on state equals the reset state (§3.12)
         self._rx = bytearray()
         self._tx = bytearray()
         self._faults: list[Fault] = []
+        self.cmd_faults: dict[int, list[Fault]] = {}  # cmd -> faults for the next requests with that cmd
 
     def inject(self, *faults: Fault) -> None:
         self._faults.extend(faults)
@@ -166,7 +198,7 @@ class FakeDevice:
             del self._rx[:i]
             if len(self._rx) < REQ_HDR_LEN:
                 return
-            arg_len = self._rx[3]
+            arg_len = self._rx[3] | self._rx[4] << 8
             if arg_len > MAX_ARGS:  # false magic: rescan from the next byte
                 del self._rx[:1]
                 continue
@@ -178,10 +210,13 @@ class FakeDevice:
             self._handle_frame(frame)
 
     def _handle_frame(self, frame: bytes) -> None:
-        cmd, seq, arg_len = frame[1], frame[2], frame[3]
+        cmd, seq = frame[1], frame[2]
+        arg_len = frame[3] | frame[4] << 8
         body = frame[: REQ_HDR_LEN + arg_len]
         (crc,) = struct.unpack("<I", frame[-CRC_LEN:])
         fault = self._faults.pop(0) if self._faults and cmd != Cmd.ABORT else None
+        if fault is None and self.cmd_faults.get(cmd):
+            fault = self.cmd_faults[cmd].pop(0)
 
         if fault is Fault.CORRUPT_REQUEST or crc32(body) != crc:
             self._tx += encode_response(cmd, seq, Status.ERR_CRC)
@@ -209,9 +244,24 @@ class FakeDevice:
             return
         self._stream = _Stream(seq, start, start + count, fault)
 
+    def chip_page(self, page: int) -> bytes:
+        """What the array holds, without read faults."""
+        if page in self.pages:
+            return self.pages[page]
+        data = page_data(page)
+        if page // PAGES_PER_BLOCK in self.bad_blocks and page % PAGES_PER_BLOCK == 0:
+            data = data[:2048] + b"\x00" + data[2049:]  # factory bad-block marker (§9.2)
+        return data
+
+    def erase(self, block: int) -> None:
+        """Chip-model erase (also usable by tests to prepare blank blocks)."""
+        for p in range(block * PAGES_PER_BLOCK, (block + 1) * PAGES_PER_BLOCK):
+            self.pages[p] = b"\xff" * PAGE_LEN
+            self.nop[p] = 0
+
     def read_page(self, page: int) -> bytes:
         n = self.page_reads[page] = self.page_reads.get(page, 0) + 1
-        data = bytearray(page_data(page))
+        data = bytearray(self.chip_page(page))
         if self.flip_on(page, n):
             for offset, mask in self.flaky_bits.get(page, []):
                 data[offset] ^= mask
@@ -285,6 +335,7 @@ class FakeDevice:
         if cmd == Cmd.RESET:
             if args:
                 return reply(Status.ERR_BAD_ARGS)
+            self.armed = None  # RESET disarms
             if self.rb_stuck_low:
                 return reply(Status.ERR_RB_TIMEOUT)
             self.sr = self._sr_after_reset()
@@ -314,4 +365,79 @@ class FakeDevice:
         if cmd == Cmd.ABORT:
             return reply(Status.ERR_BAD_ARGS if args else Status.OK)
 
+        if cmd == Cmd.ARM_WRITE:
+            if len(args) != ARM_LEN:
+                return reply(Status.ERR_BAD_ARGS)
+            token, first, last, idle = struct.unpack("<IHHH", args)
+            if token != ARM_TOKEN or first > last or last >= BLOCKS or not 1 <= idle <= ARM_IDLE_MAX_S:
+                return reply(Status.ERR_BAD_ARGS)
+            self.armed = (first, last, idle)
+            self.last_use = self.clock()
+            return reply(Status.OK)
+
+        if cmd == Cmd.DISARM:
+            if args:
+                return reply(Status.ERR_BAD_ARGS)
+            self.armed = None
+            return reply(Status.OK)
+
+        if cmd == Cmd.ERASE_BLOCK:
+            block, flags = struct.unpack("<HB", args) if len(args) == ERASE_LEN else (BLOCKS, 0)
+            if block >= BLOCKS or flags & ~ERASE_IGNORE_BAD_MARKER:
+                return reply(Status.ERR_BAD_ARGS)
+            first_page = block * PAGES_PER_BLOCK
+            if not self._armed_for(block):
+                return encode_response(cmd, seq, Status.ERR_NOT_ARMED, first_page)
+            if not flags & ERASE_IGNORE_BAD_MARKER:
+                if any(self.chip_page(first_page + p)[2048] != 0xFF for p in (0, 1, PAGES_PER_BLOCK - 1)):
+                    return encode_response(cmd, seq, Status.ERR_BAD_BLOCK, first_page)
+            return self._write_op(cmd, seq, first_page, "erase", block)
+
+        if cmd == Cmd.PROGRAM_PAGE:
+            if len(args) != 4 + PAGE_LEN or struct.unpack("<I", args[:4])[0] >= TOTAL_PAGES:
+                return reply(Status.ERR_BAD_ARGS)
+            page = struct.unpack("<I", args[:4])[0]
+            if not self._armed_for(page // PAGES_PER_BLOCK):
+                return encode_response(cmd, seq, Status.ERR_NOT_ARMED, page)
+            return self._write_op(cmd, seq, page, "program", page, args[4:])
+
         return reply(Status.ERR_UNKNOWN_CMD)
+
+    def _armed_for(self, block: int) -> bool:
+        if self.armed and self.clock() - self.last_use > self.armed[2]:
+            self.armed = None  # idle timeout
+        return self.armed is not None and self.armed[0] <= block <= self.armed[1]
+
+    def _write_op(self, cmd: int, seq: int, page: int, kind: str, target: int, data: bytes = b"") -> bytes:
+        """The firmware's finish(): run the op, then SR checks (bit 7, then bits 6/0). Failures disarm."""
+        if self.wp_stuck:  # WP# never rose: the chip ignored the command
+            self.armed = None
+            self.sr = 0x60
+            return encode_response(cmd, seq, Status.ERR_WP_STUCK, page, struct.pack("<BI", 0x60, 0))
+        timeouts = self.erase_timeout if kind == "erase" else self.program_timeout
+        if target in timeouts:  # WP# low aborts the op: content undefined until the next erase (§4.3)
+            self.armed = None
+            self.ops.append((kind + "-aborted", target))
+            for p in range(page, page + (PAGES_PER_BLOCK if kind == "erase" else 1)):
+                self.pages[p] = random.Random(p ^ 0x5A5A).randbytes(PAGE_LEN)
+            self.sr = self._sr_after_reset()
+            return encode_response(cmd, seq, Status.ERR_RB_TIMEOUT, page)
+        self.ops.append((kind, target))
+        if kind == "erase":
+            self.erase(target)
+            busy_ns = 3_500_000
+        else:
+            old = self.chip_page(target)
+            self.pages[target] = bytes(a & b for a, b in zip(old, data))
+            self.nop[target] = self.nop.get(target, 0) + 1
+            if self.nop[target] > 4:  # Table 23: NOP = 4
+                self.nop_violations.append(target)
+            busy_ns = 200_000
+        fails = self.erase_fail if kind == "erase" else self.program_fail
+        if target in fails:
+            self.armed = None
+            self.sr = 0x61
+            return encode_response(cmd, seq, Status.ERR_OP_FAILED, page, struct.pack("<BI", 0xE1, busy_ns))
+        self.last_use = self.clock()
+        self.sr = 0x60  # READ_STATUS afterwards: WP# low again
+        return encode_response(cmd, seq, Status.OK, page, struct.pack("<BI", 0xE0, busy_ns))

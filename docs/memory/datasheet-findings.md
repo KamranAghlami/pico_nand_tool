@@ -20,6 +20,16 @@ Verified against datasheet Rev \*W on 2026-09-30. SPEC.md has no conflicts with 
   addr 23h, 1 bit/cell, bad 28 00, endurance 01 05, guaranteed 01, 01 03, NOP 04, 111=00, ECC 01, interleave 01,
   attrs 04, pin cap 0A, timing modes 1F 00 / 1F 00, tPROG BC 02, tBERS 10 27, tR 19 00, tCCS 64 00, rest 0.
 
+Write mode (checked 2026-10-05):
+
+- tPROG typ 200 / max 700 µs, tBERS typ 3.5 / max 10 ms, NOP = 4 partial programs per page (Table 23). tADL 70 ns,
+  tWW 100 ns (Table 20). Pages may be programmed in any order within a block (§3.2): no sequential-page rule.
+- WP# must be at level ≥ tWW before WE#↑ of `80h`/`60h`; pulling WP# low while busy aborts the program/erase like
+  `FFh`, and the page/block is then undefined until a clean erase (§4.3, §3.2, §3.5).
+- After program/erase, SR bit 7 read while WP# is still high proves WP# really rose (bit 7 = 0 → chip ignored the
+  command). Bit 0 = fail, bit 6 = ready (Table 13).
+- Read the bad-block markers before any erase: an erase can destroy them (§9.2).
+
 **Why:** these facts are easy to get wrong, and they change M2/M3 expectations.
 **How to apply:** use them for firmware sequences, host `status` decoding, and the tests. See
 [[milestone-status]].

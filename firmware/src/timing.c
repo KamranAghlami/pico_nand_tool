@@ -8,7 +8,7 @@ _Static_assert(2 * PROTO_TIMING_FIELDS + 4 == PROTO_TIMING_WIRE_LEN, "timing_t w
 static uint16_t *timing_field(timing_t *t, unsigned i) {
     uint16_t *const f[PROTO_TIMING_FIELDS] = {
         &t->t_cs, &t->t_setup, &t->t_wp, &t->t_wh, &t->t_whr, &t->t_rea,
-        &t->t_reh, &t->t_rhw, &t->t_wb, &t->t_rr, &t->t_ceh,
+        &t->t_reh, &t->t_rhw, &t->t_wb, &t->t_rr, &t->t_ceh, &t->t_adl, &t->t_ww,
     };
     return f[i];
 }
@@ -48,6 +48,8 @@ bool timing_meets_floors(const timing_t *t, uint32_t clk_hz) {
         && t->t_wb >= cyc(PROTO_FLOOR_TWB_NS, clk_hz)
         && t->t_rr >= cyc(PROTO_FLOOR_TRR_NS, clk_hz)
         && t->t_ceh >= cyc(PROTO_FLOOR_TCHZ_NS, clk_hz)
+        && t->t_adl >= cyc(PROTO_FLOOR_TADL_NS, clk_hz)
+        && t->t_ww >= cyc(PROTO_FLOOR_TWW_NS, clk_hz)
         && t->rb_timeout_us >= PROTO_FLOOR_RB_TIMEOUT_US
         && t->rb_timeout_us <= PROTO_TIMING_RB_TIMEOUT_MAX_US;
 }

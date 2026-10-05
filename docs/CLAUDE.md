@@ -1,45 +1,62 @@
 # Pico NAND Tool — project instructions
 
-A Raspberry Pi Pico (RP2040) NAND tool. The current scope (SPEC) is a **read-only** raw dumper. It bit-bangs a
-Spansion/SkyHigh **S34ML02G100BHI00** (2 Gb SLC, ×8, 3.3 V, BGA63 in a clamshell socket) and streams raw pages
-(2048 data + 64 OOB) over USB to a Python host tool.
+A Raspberry Pi Pico (RP2040) NAND tool. It bit-bangs a Spansion/SkyHigh **S34ML02G100BHI00** (2 Gb SLC, ×8,
+3.3 V, BGA63 in a clamshell socket) and streams raw pages (2048 data + 64 OOB) over USB to a Python host tool. Read
+side: M0–M6, done. **Write mode** (block erase + full-page program, armed at runtime) was added to the SPEC on
+2026-10-05; design record `docs/WRITE_PROPOSAL.md`, milestones W1–W7.
 
-The repo is named `pico_nand_tool` (GitHub: KamranAghlami/pico_nand_tool) because other capabilities may come later.
-**The name does not relax anything below.** Program/erase stays forbidden until the user changes `docs/SPEC.md`
-themselves. Never scaffold, stub or "prepare" write paths in advance.
+Write mode exists, but only within the hard rules below. Any write capability beyond them (more opcodes, partial
+pages, WP# handling changes, skipping the arm) needs a SPEC change by the user first.
 
 - Requirements: `docs/SPEC.md` (user-owned; do not edit without being asked).
-- Wire protocol (canonical): `docs/PROTOCOL.md`. Approved design record: `docs/PROPOSAL.md`.
+- Wire protocol (canonical): `docs/PROTOCOL.md`. Approved design records: `docs/PROPOSAL.md` (read side),
+  `docs/WRITE_PROPOSAL.md` (write mode).
 - Datasheet: `docs/datasheet.pdf` (doc 002-00676 Rev \*W). **It is the source of truth.** If SPEC and datasheet
   conflict, stop and tell the user. Do not pick one silently.
 
 ## Hard safety rules (never relax these, not even behind a flag)
 
-- The firmware may only ever issue these opcodes: `FFh` Reset, `90h` Read ID, `ECh` Read Parameter Page,
-  `00h`/`30h` Page Read, `70h` Read Status. The gate is the `NAND_CMD()` `_Static_assert` macro in
-  `firmware/src/nand_cmd.h`, plus a runtime allow-list in `nand_bus_cmd_latch_()` that `panic()`s *before*
-  touching the bus. Never call `nand_bus_cmd_latch_` directly: `make -C firmware/tests check`
-  (`check_gate_calls.sh`) fails the build if any file other than `nand_cmd.h`, and its definition in `nand_bus.c`,
-  names it.
-  Never write code for `80h 10h 85h 60h D0h` or any other opcode, and never add a data-input (WE# with CLE=ALE=0)
-  path.
-- WP# (ball C3) is wired to **GP13** with a 10k external pull-down to GND, which holds it low (write-protected). The
-  firmware drives it **low only**: first thing in `nand_bus_init()`, it initialises the pin, clears the latch and
-  enables the output. Nothing may ever drive it high or pull it up. `PIN_WP`/`MASK_WP` may appear only in `pins.h`
-  and those three lines; `make -C firmware/tests check` (`check_wp.sh`) fails the build otherwise, and a
-  `_Static_assert` keeps `MASK_WP` out of every bus mask. Driving WP# high is for a future write mode, and that only
-  happens after the user changes `docs/SPEC.md`.
+- The firmware may only ever issue these opcodes. Read side: `FFh` Reset, `90h` Read ID, `ECh` Read Parameter
+  Page, `00h`/`30h` Page Read, `70h` Read Status, through `NAND_CMD()`. Write side: `80h`/`10h` Page Program and
+  `60h`/`D0h` Block Erase, through `NAND_WCMD()`. Both are `_Static_assert` macros in `firmware/src/nand_cmd.h`.
+  `nand_bus_cmd_latch_()` re-checks at run time and `panic()`s *before* touching the bus on any other opcode, on a
+  write opcode outside the write window, and on a write sequence out of order (`10h` only after `80h` + 5 addresses
+  + data, `D0h` only after `60h` + 3 addresses). Never add `85h`, copy-back, cache, multiplane, `78h`, OTP or any
+  other opcode.
+- Never call `nand_bus_cmd_latch_` directly. `NAND_WCMD`, `nand_bus_data_in` and `nand_bus_write_window_open/close`
+  may be used only in `nand_write.c` (plus their declarations and definitions). `make -C firmware/tests check`
+  (`check_gate_calls.sh`) fails the build otherwise.
+- The data-input cycle (WE# with CLE = ALE = 0) exists only in `nand_bus_data_in()`, which panics unless the write
+  window is open and `80h` + 5 address cycles came just before. There is no other data-input path.
+- Write mode is armed only by the host's `ARM_WRITE` (token + block range + idle timeout ≤ 60 s). The arm state is
+  RAM-only (boot = disarmed) and is dropped on `DISARM`, a DTR change, `RESET`, the idle timeout and any failed
+  write operation. Erase/program of a block outside the armed range is rejected before the bus is touched.
+- WP# (ball C3) is on **GP13** with a 10k external pull-down to GND. The firmware drives it low first thing in
+  `nand_bus_init()`. It goes high in exactly one place, `nand_bus_write_window_open()`, and low again in
+  `nand_bus_write_window_close()` and `nand_bus_park()` (panic/fault path). The write window spans exactly one
+  erase or program operation and is closed on every return path, including timeouts (WP# low aborts the operation,
+  §4.3). Nothing pulls WP# up. `PIN_WP`/`MASK_WP` may appear only in `pins.h` and those lines in `nand_bus.c`;
+  `check_wp.sh` enforces that, and a `_Static_assert` keeps `MASK_WP` out of every bus mask.
+- Panic and HardFault park the bus (WP# low) and stop the watchdog, then halt. The watchdog resets a hung Pico; after
+  reset GP13 is an input and the pull-down holds WP# low.
+- `ERASE_BLOCK` checks the factory bad-block marker (§9.2) itself and refuses unless the host sets the explicit
+  override flag for that request.
 - The dump is the only copy of the data. The host tool never overwrites an existing output file without `--force`.
   It never zero-fills or "guesses" pages; unreadable or unstable pages are flagged, not fixed silently.
-- Never claim a hardware milestone (M0–M6) passed without the user's pasted output. At each hardware milestone, stop
-  and tell the user exactly what to run and what output to expect.
+- The host tool never erases without typed confirmation or `--yes`, saves the target's bad-block markers before the
+  first erase, verifies every written block by readback, and stops at the first failure. It never re-sends an erase
+  or program request automatically after a lost response (it re-does the whole block instead), and never marks,
+  remaps or skips a failing block silently.
+- Never claim a hardware milestone (M0–M6, W2–W7) passed without the user's pasted output. At each hardware
+  milestone, stop and tell the user exactly what to run and what output to expect.
 
 ## Workflow
 
-- Work milestone by milestone in the SPEC order: M0 → M6. Correctness before speed. PIO or other optimisation only
-  after M5 passes.
+- Work milestone by milestone in the SPEC order: M0 → M6, then W1 → W7. Correctness before speed. PIO or other
+  optimisation only after M5 passes (and, for writing, after W6).
 - `docs/PROTOCOL.md` is canonical for the wire format. Change it there first, then in the firmware and host
-  together. `docs/PROPOSAL.md` is the approved design record (2026-09-30).
+  together. `docs/PROPOSAL.md` (2026-09-30) and `docs/WRITE_PROPOSAL.md` (2026-10-05) are the approved design
+  records.
 - Protocol constants live in `firmware/src/protocol_defs.h` **and** `host/nand_tool/protocol.py`. A pytest keeps
   them in sync, so update both together.
 - Comment every NAND bus sequence with the datasheet section, figure or table it implements (e.g.

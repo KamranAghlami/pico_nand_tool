@@ -1,19 +1,22 @@
 # pico_nand_tool
 
-A Raspberry Pi Pico (RP2040) based raw NAND tool. Its current scope is a **read-only** dumper: the Pico bit-bangs a
-Spansion/SkyHigh S34ML02G1 (2 Gb SLC, ×8, BGA63) and streams full raw pages (data + OOB) over USB to a Python host
-tool. The host tool verifies, retries, compares and reconciles multi-pass dumps.
+A Raspberry Pi Pico (RP2040) based raw NAND tool. The Pico bit-bangs a Spansion/SkyHigh S34ML02G1 (2 Gb SLC, ×8,
+BGA63) and streams full raw pages (data + OOB) over USB to a Python host tool. The host tool verifies, retries,
+compares and reconciles multi-pass dumps. A **write mode** erases blocks and programs full pages, armed at runtime,
+with every written block verified by readback.
 
 - Requirements: [`docs/SPEC.md`](docs/SPEC.md)
 - Wire protocol: [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
-- Design record (approved): [`docs/PROPOSAL.md`](docs/PROPOSAL.md)
+- Design records (approved): [`docs/PROPOSAL.md`](docs/PROPOSAL.md) (read side),
+  [`docs/WRITE_PROPOSAL.md`](docs/WRITE_PROPOSAL.md) (write mode)
 
-In its current scope the firmware never programs or erases the chip. Only Reset, Read ID, Read Parameter Page, Page
-Read and Read Status can reach the bus, and WP# is held low by a pull-down and by the firmware, which never drives it
-high.
+Reading uses only Reset, Read ID, Read Parameter Page, Page Read and Read Status. Write mode adds Block Erase
+(`60h`/`D0h`) and full-page Page Program (`80h`/`10h`) and nothing else. It is off at boot: the host arms it for one
+block at a time, and the firmware refuses erase/program otherwise, before touching the bus. WP# is held low by a
+pull-down and by the firmware, and goes high only for the duration of one armed erase or program.
 
-**Status:** milestone M0 (toolchain + USB) has passed on hardware. M1 (bus test) is next. The firmware does not
-talk to the NAND chip yet; see [Usage](#usage) for what works today.
+**Status:** the read side (M0, M2–M6) has passed on hardware; a full dump has been taken and verified. Write mode
+(W1: code and tests) is done; the hardware milestones W2–W7 are next (see [Write mode](#write-mode)).
 
 ## Hardware
 
@@ -52,8 +55,8 @@ The pin map lives in [`firmware/src/pins.h`](firmware/src/pins.h). Change it the
 - I/O0–I/O7 must stay on 8 consecutive GPIOs, so that one read of the GPIO register gives the data byte.
 - Datasheet Fig. 3 says balls D3, G4 (VCC) and F7 (VSS) "might not be bonded internally". Connect them anyway, but
   make sure the guaranteed balls, **H8 and J6 (VCC)** and **C5, K3 and K8 (VSS)**, are solid.
-- WP# is on a GPIO for a future write mode. For now it is always low (write-protected): the 10 kΩ pull-down holds it
-  low before the firmware starts, and the firmware drives GP13 low at boot. With WP# low, the chip's status register
+- WP# is low (write-protected) except during a single armed erase or program: the 10 kΩ pull-down holds it low
+  before the firmware starts, and the firmware drives GP13 low at boot. With WP# low, the chip's status register
   reads `60h` after a reset. `E0h` would mean WP# is not really low: stop and check the pull-down and wiring.
 
 ## Build the firmware
@@ -154,7 +157,7 @@ nandtool [--port PORT] [--timeout SECONDS] <command> [options]
 
 Exit status: 0 = success, 1 = error (printed as `error: …`), 130 = interrupted with Ctrl-C.
 
-### Commands available now
+### Read commands
 
 | Command | What it does |
 |---|---|
@@ -171,6 +174,8 @@ Exit status: 0 = success, 1 = error (printed as `error: …`), 130 = interrupted
 | `nandtool reconcile A B --out FINAL [--reads K] [--min-agree M] [--report FILE] [--force]` | Copies the pages A and B agree on. Re-reads every page that differs K times (default 5), sets each bit by majority vote, and writes FINAL plus a JSON report with every non-unanimous bit and its votes. A page where some bit has fewer than M agreeing votes (default 4 of 5) is flagged UNSTABLE (exit 1), never silently "fixed". |
 | `nandtool split IMAGE [--outdir DIR \| --data FILE --oob FILE] [--force]` | Splits an image into `data.bin` (2048 B per page) and `oob.bin` (64 B per page), next to IMAGE by default. Never overwrites without `--force`. |
 | `nandtool badblocks IMAGE [--start N]` | Factory bad-block scan (datasheet §9.2): a block is bad if spare byte 0 of its 1st, 2nd or last page is not FFh. Lists each bad block with the marker values. Warns if block 0 looks bad (it is guaranteed good) or if there are more than 40 (the chip's maximum): on a used chip the previous system may have written spare byte 0. |
+| `nandtool badblocks IMAGE --blank` | Lists the image's blocks that are all FFh (data and spare). |
+| `nandtool badblocks --device [--first-block B] [--count N]` | The same marker scan, read live from the chip. |
 
 The timing setting lives in the Pico's RAM. It resets to DEFAULT when the Pico reboots.
 
@@ -178,8 +183,8 @@ Example:
 
 ```
 $ nandtool ping
-firmware : pico-nand-tool 0.1.0 (a749da2)
-version  : 0.1.0, protocol v1
+firmware : pico-nand-tool 0.2.0 (…)
+version  : 0.2.0, protocol v2
 clk_sys  : 125.000 MHz
 
 $ nandtool status --reset
@@ -195,6 +200,19 @@ ID       : 01 DA 90 95 44
 repeat   : 1000/1000 reads identical
 expected : 01 DA 90 95 44 (S34ML02G1 x8): match
 ```
+
+### Write mode
+
+Write mode needs firmware 0.2.0 or later (protocol v2). Every erase and program is armed for exactly one block and
+disarmed after it; a lost response is never re-sent (the whole block is re-done instead); every written block is read
+back and compared. Erasing asks you to type a confirmation such as `ERASE 3 BLOCKS` (`--yes` skips it, for scripts).
+
+| Command | What it does |
+|---|---|
+| `nandtool erase --block B [--count N] [--ignore-bad-marker] [--yes]` | Reads the blocks' bad-block markers first and refuses bad blocks (unless `--ignore-bad-marker`, which destroys the factory marking). Erases each block and checks it reads all FFh. |
+| `nandtool program --page N --in FILE` | Programs one 2112-byte page (2048 data + 64 spare). Refuses unless the page is erased (all FFh). Reads it back and compares. |
+| `nandtool write IMAGE [--first-block B --count N] [--map 1:1\|skip-bad] [--all] [--backup DUMP] [--dry-run] [--fresh] [--yes]` | Writes a raw image (2112 B per page, whole blocks; the start page comes from its `.meta.json`, or `--start`). First it reads the target's bad-block markers (saved in `IMAGE.write.json` before any erase) and, by default (**only-changed**), every target block: blocks that already match are skipped, so a patched image only erases the patched blocks. `--all` rewrites every block. `--map 1:1` (default) refuses, before erasing anything, if a bad target block would receive data; `--map skip-bad` shifts the image past bad target blocks (what a bootloader or UBI usually expects; a positional controller needs 1:1). Blocks marked bad in the image are not written. Pages that are all FFh are not programmed. `--backup DUMP` checks 64 random pages of a dump against the chip; without it you get a loud warning. `--dry-run` stops after the plan. An interrupted run is picked up by running it again: the block in progress is always re-written. ECC/OOB bytes are written as they are in the image, never recomputed. |
+| `nandtool interlock-test --block B` | Hardware check of the write interlocks, on a block that must be all FFh: erase/program while not armed, armed for another block, after `DISARM`, after `RESET`, after the idle timeout and after a wrong-token arm must all be refused (`ERR_NOT_ARMED`), WP# must read low afterwards and the block must still be blank. |
 
 ### Not implemented
 
@@ -212,12 +230,16 @@ nandtool compare pass1.bin pass2.bin
 nandtool reconcile pass1.bin pass2.bin --out final.bin
 nandtool badblocks final.bin
 nandtool split final.bin                                                 # → data.bin, oob.bin
+
+# write mode: patch final.bin into patched.bin, then
+nandtool write patched.bin --start 0 --backup final.bin --dry-run         # what would change
+nandtool write patched.bin --start 0 --backup final.bin                   # erase + program the changed blocks
 ```
 
 ## Tests
 
 ```sh
-make -C firmware/tests check        # firmware unit tests + opcode safety check (host gcc, no SDK needed)
+make -C firmware/tests check        # firmware unit tests + opcode, write-path and WP# safety checks (host gcc)
 .venv/bin/pytest host/tests -q      # host tool against a simulated device (needs host[test])
 ```
 

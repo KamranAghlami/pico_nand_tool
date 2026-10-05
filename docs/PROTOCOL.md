@@ -1,6 +1,7 @@
 # Wire Protocol (canonical)
 
-Protocol version **1**. Approved 2026-09-30 (see `PROPOSAL.md` §3). This file is the source of truth. Change it here
+Protocol version **2** (2026-10-05: write mode, see `WRITE_PROPOSAL.md` §4). Version 1 was approved 2026-09-30 (see
+`PROPOSAL.md` §3). This file is the source of truth. Change it here
 first, then change `firmware/src/protocol_defs.h` and `host/nand_tool/protocol.py` together. A pytest checks that
 the two agree.
 
@@ -32,12 +33,12 @@ the two agree.
 | 0 | 1 | magic | `0xA5` |
 | 1 | 1 | cmd | §Commands |
 | 2 | 1 | seq | host-chosen, echoed in every response to this request |
-| 3 | 1 | arg_len | 0 … 32 |
-| 4 | n | args | |
-| 4+n | 4 | crc32 | over bytes `[0, 4+n)` |
+| 3 | 2 | arg_len | u16, 0 … 2116 |
+| 5 | n | args | |
+| 5+n | 4 | crc32 | over bytes `[0, 5+n)` |
 
-- The device skips bytes until it sees `0xA5`. `arg_len > 32` → the byte is treated as a false magic and scanning
-  resumes.
+- The device skips bytes until it sees `0xA5`. `arg_len > 2116` → the byte is treated as a false magic and scanning
+  resumes. (v1 had a 1-byte `arg_len` ≤ 32; v2 widened it so `PROGRAM_PAGE` can carry a whole page.)
 - If more than **100 ms** pass between bytes of one request, the partial request is discarded.
 - A bad CRC gets a response with `status = ERR_CRC` (cmd/seq echoed as received), and the command is **not**
   executed.
@@ -69,6 +70,10 @@ Every request gets exactly one response frame, except `READ_PAGES`, which gets `
 | `0x05` | `ERR_ABORTED` | stream stopped by `ABORT` or DTR drop |
 | `0x06` | `ERR_BUSY` | request (other than `ABORT`) received while a stream is running |
 | `0x07` | `ERR_TIMING_FLOOR` | `SET_TIMING` custom value below the datasheet floor; nothing changed |
+| `0x08` | `ERR_NOT_ARMED` | erase/program while write mode is not armed, the arm timed out, or the block is outside the armed range; nothing reached the bus |
+| `0x09` | `ERR_BAD_BLOCK` | `ERASE_BLOCK` refused: the block's factory bad-block marker is not `FFh` (§9.2); nothing erased |
+| `0x0A` | `ERR_OP_FAILED` | program/erase finished with SR bit 0 = 1 (fail) or bit 6 = 0; the block is grown-bad (§9.1) |
+| `0x0B` | `ERR_WP_STUCK` | after program/erase SR bit 7 = 0: WP# never went high, so the chip ignored the command (§2.5) |
 
 ## Commands
 
@@ -76,13 +81,17 @@ Every request gets exactly one response frame, except `READ_PAGES`, which gets `
 |---:|---|---|---|
 | `0x01` | `PING` | none | `u8 proto_ver`, `u8 fw_major`, `u8 fw_minor`, `u8 fw_patch`, `u32 clk_sys_hz`, then an ASCII version string (no NUL), e.g. `pico-nand-tool 0.1.0 (g1a2b3c4)` |
 | `0x02` | `BUS_TEST` | none, or `u16 step_us` (0 → 10) | 3 bytes, see §BUS_TEST |
-| `0x03` | `SET_TIMING` | `u8 mode` (0 = query, 1 = DEFAULT, 2 = SLOW), or `u8 mode=3` + `timing_t` (26 B) | `u8 active_mode` (1/2/3) + active `timing_t` (27 B total) |
-| `0x04` | `RESET` | none | `u32 busy_ns`: measured R/B# low time after `FFh`, 0 = never seen low |
+| `0x03` | `SET_TIMING` | `u8 mode` (0 = query, 1 = DEFAULT, 2 = SLOW), or `u8 mode=3` + `timing_t` (30 B) | `u8 active_mode` (1/2/3) + active `timing_t` (31 B total) |
+| `0x04` | `RESET` | none | `u32 busy_ns`: measured R/B# low time after `FFh`, 0 = never seen low. Also disarms write mode |
 | `0x05` | `READ_ID` | none (→ `00h`, 5), or `u8 addr` ∈ {`00h`, `20h`}, `u8 n` ∈ 1…8 | `n` bytes |
 | `0x06` | `READ_STATUS` | none | 1 byte: status register (sent as `00h` then `70h`) |
 | `0x07` | `READ_PARAM` | none | 768 bytes (3 parameter-page copies; `FFh` Reset is issued first) |
 | `0x08` | `READ_PAGES` | `u32 start`, `u32 count`; `count ≥ 1`, `start + count ≤ 131072` | stream, see below |
 | `0x09` | `ABORT` | none | during a stream: stops it (see below). Otherwise: empty `OK` |
+| `0x0A` | `ARM_WRITE` | `u32 token` = `0x4D524157` (bytes `57 41 52 4D`, "WARM"), `u16 first_block`, `u16 last_block`, `u16 idle_timeout_s` | empty `OK`. See §Write mode |
+| `0x0B` | `DISARM` | none | empty `OK` (also when not armed) |
+| `0x0C` | `ERASE_BLOCK` | `u16 block`, `u8 flags` (bit 0 = ignore the bad-block marker; other bits 0) | `u8 sr`, `u32 busy_ns`; `page` = first page of the block |
+| `0x0D` | `PROGRAM_PAGE` | `u32 page`, then 2112 bytes (2048 data + 64 spare) | `u8 sr`, `u32 busy_ns`; `page` = the page |
 
 ### READ_PAGES stream
 
@@ -106,9 +115,9 @@ The same rule applies to single-response commands: `ABORT`, drain, retry. The dr
 line that never goes quiet is a hard error ("not a Pico NAND Tool?"), not an endless wait. Every read also honours
 the per-request deadline while bytes keep arriving, so foreign or stale frames can't stall a request.
 
-## `timing_t` (26 bytes)
+## `timing_t` (30 bytes)
 
-Eleven `u16` delays in **clk_sys cycles** (`clk_sys_hz` is in `PING`; 125 MHz → 8 ns), then `u32 rb_timeout_us`.
+Thirteen `u16` delays in **clk_sys cycles** (`clk_sys_hz` is in `PING`; 125 MHz → 8 ns), then `u32 rb_timeout_us`.
 Each delay is a minimum. See `PROPOSAL.md` §4.2 for the datasheet derivation.
 
 | # | Field | DEFAULT | SLOW |
@@ -124,6 +133,8 @@ Each delay is a minimum. See `PROPOSAL.md` §4.2 for the datasheet derivation.
 | 8 | `t_wb` | 25 | 125 |
 | 9 | `t_rr` | 6 | 125 |
 | 10 | `t_ceh` | 8 | 125 |
+| 11 | `t_adl` | 18 | 125 |
+| 12 | `t_ww` | 25 | 125 |
 | — | `rb_timeout_us` (u32) | 1000 | 1000 |
 
 **Floors**, checked on `SET_TIMING` mode 3 (ns → cycles, rounded up). Every Table 20 constraint is checked against
@@ -147,9 +158,12 @@ share:
 | tWB 100 max | `t_wb` | ≥ 100 ns |
 | tRR 20 | `t_rr` | ≥ 20 ns |
 | tCHZ 30 max, tCSD 10 | `t_ceh` | ≥ 30 ns |
+| tADL 70 (last address WE#↑ → first data WE#↑) | `t_adl` | ≥ 70 ns |
+| tWW 100 (WP# → WE#↑ of `80h`/`60h`) | `t_ww` | ≥ 100 ns |
 | tR 25 µs | `rb_timeout_us` | ≥ 25 µs |
 
-`rb_timeout_us` is also capped at 100 000, so a command can never hang for long.
+`rb_timeout_us` is also capped at 100 000, so a command can never hang for long. It applies to reads only: program
+and erase have fixed R/B# timeouts of 2 000 µs (tPROG ≤ 700 µs) and 20 000 µs (tBERS ≤ 10 ms), Table 23.
 
 ## BUS_TEST
 
@@ -178,3 +192,39 @@ Then the readback (not visible on the analyzer, apart from the IO lines drifting
 
 A bit stuck against its pull, in byte 0 or 1, means a shorted or externally loaded IO line. After the readback the
 bus is left as an input with pull-downs (the idle state).
+
+## Write mode
+
+Write mode is **off at boot**. Erase and program are refused with `ERR_NOT_ARMED`, without touching the bus, unless
+the device is armed and the block lies in the armed range.
+
+- `ARM_WRITE` checks: token `0x4D524157`, `first_block ≤ last_block ≤ 2047`, `1 ≤ idle_timeout_s ≤ 60`; otherwise
+  `ERR_BAD_ARGS` and the previous arm state is kept. A valid `ARM_WRITE` replaces any earlier arm.
+- The arm is dropped by `DISARM`, `RESET`, a DTR change (port opened or closed), `idle_timeout_s` passing since the
+  arm or the last successful erase/program, and any erase/program that ends in `ERR_RB_TIMEOUT`, `ERR_OP_FAILED` or
+  `ERR_WP_STUCK`. `ERR_BAD_ARGS`, `ERR_NOT_ARMED` and `ERR_BAD_BLOCK` leave it as it is.
+- Erase and program are single-response commands (no stream). During a `READ_PAGES` stream they get `ERR_BUSY`.
+- **The host must not re-send an erase or program after a lost response**: it cannot know whether it ran. The host
+  tool re-does the whole block instead (erase, program, verify). An `ERR_CRC` response is safe to retry: nothing ran.
+
+Check order: `ERR_BAD_ARGS` (lengths, block < 2048, page < 131072, flags) → `ERR_NOT_ARMED` → (erase only) marker
+check → the operation.
+
+### ERASE_BLOCK (§3.5, Fig. 24)
+
+1. Unless flags bit 0 is set: read spare byte 0 (column 2048) of pages 0, 1 and 63 of the block (`00h`/`30h` reads).
+   Any value other than `FFh` → `ERR_BAD_BLOCK`. An R/B# timeout here → `ERR_RB_TIMEOUT`.
+2. CE# low, WP# high, `t_ww`, `60h`, 3 row-address cycles (row = block × 64), `D0h`, `t_wb`, poll R/B# for up to
+   20 ms, `70h`, read SR, WP# low, CE# high.
+3. SR checks in this order: bit 7 = 0 → `ERR_WP_STUCK`; bit 0 = 1 or bit 6 = 0 → `ERR_OP_FAILED`; otherwise `OK`.
+   These three carry the `sr` + `busy_ns` payload.
+4. R/B# timeout: WP# goes low at once (that aborts the operation, §4.3), then `FFh` (Reset) recovers the chip →
+   `ERR_RB_TIMEOUT` (empty payload). The block's content is undefined until it is erased again (§3.5).
+
+### PROGRAM_PAGE (§3.2, Fig. 19)
+
+CE# low, WP# high, `t_ww`, `80h`, 5 address cycles (column 0, row = page), `t_adl`, 2112 data-input cycles (WE#
+with CLE = ALE = 0; `t_setup`, `t_wp`, `t_wh` per byte), `10h`, `t_wb`, poll R/B# for up to 2 ms, `70h`, read SR,
+WP# low, CE# high. SR checks and timeout handling as for erase. The device does not check that the page was erased;
+the host does. Each page may be programmed at most 4 times between erases (NOP, Table 23); the host tool programs
+each page once.

@@ -59,6 +59,17 @@ metadata:
 - 2026-10-04: **M6 APPROVED by the user**; committed and pushed. The user **dropped M1** for good ("we don't need
   m1, it works"). BUS_TEST stays unimplemented (ERR_UNKNOWN_CMD). SPEC.md still lists M1; it is user-owned, so it
   was not edited. All milestones are closed.
+- 2026-10-05: **Write mode planning started.** User decisions: both use cases (same-chip modified image and
+  cloning), ONE firmware with runtime arm (no separate RW build), minimal ops (erase + full-page program; partial
+  page only if partial reads ever exist), backup = warn only. Draft: `docs/WRITE_PROPOSAL.md` (milestones W0-W7).
+  Not approved; no write code until the user changes SPEC.md (W0).
+- 2026-10-05: **Write proposal APPROVED** ("approved, feel free to update spec as needed"). W0: SPEC.md, docs/CLAUDE.md
+  hard rules and PROTOCOL.md (v2) updated by Claude on that authority. W1 code written (firmware 0.2.0 / host
+  0.2.0, protocol v2): NAND_WCMD gate + write window + sequence checks + data-in only in nand_write.c, WP# raised
+  only in nand_bus_write_window_open, ARM_WRITE/DISARM/ERASE_BLOCK/PROGRAM_PAGE, watchdog, HardFault parks the bus;
+  host erase/program/write/interlock-test, badblocks --device/--blank. make check, SDK build and 188 host tests
+  pass. Nothing run on hardware yet. Next: W2 (flash 0.2.0, read regressions, `interlock-test` on a block that is
+  blank in final.bin, `badblocks --device`, `write final.bin --dry-run` should find nothing to write).
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after

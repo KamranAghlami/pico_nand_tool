@@ -13,8 +13,8 @@ def test_ping(capsys):
     dev = FakeDevice()
     assert run(dev, "ping") == 0
     out = capsys.readouterr().out
-    assert "pico-nand-tool 0.1.0" in out
-    assert "protocol v1" in out
+    assert "pico-nand-tool 0.2.0" in out
+    assert "protocol v2" in out
     assert "125.000 MHz" in out
     assert dev.closed
 

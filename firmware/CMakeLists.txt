@@ -12,7 +12,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 pico_sdk_init()
 
 set(FW_VERSION_MAJOR 0)
-set(FW_VERSION_MINOR 1)
+set(FW_VERSION_MINOR 2)
 set(FW_VERSION_PATCH 0)
 
 # git description for the PING version string, regenerated on every build (not just at configure time).
@@ -32,6 +32,7 @@ add_executable(pico_nand_tool
     src/timing.c
     src/nand_bus.c
     src/nand_ops.c
+    src/nand_write.c
     src/fault.c
     src/usb_descriptors.c
 )
@@ -43,7 +44,7 @@ target_compile_definitions(pico_nand_tool PRIVATE
     FW_VERSION_MAJOR=${FW_VERSION_MAJOR}
     FW_VERSION_MINOR=${FW_VERSION_MINOR}
     FW_VERSION_PATCH=${FW_VERSION_PATCH}
-    # Every panic() -> fault.c: park the NAND bus and halt.
+    # Every panic() -> fault.c: park the NAND bus (WP# low) and halt.
     PICO_PANIC_FUNCTION=nand_tool_panic
 )
 
@@ -57,6 +58,7 @@ target_link_libraries(pico_nand_tool
     hardware_clocks
     hardware_sync
     hardware_timer
+    hardware_watchdog
     tinyusb_device
 )
 

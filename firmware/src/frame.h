@@ -12,9 +12,9 @@
 typedef struct {
     uint8_t cmd;
     uint8_t seq;
-    uint8_t arg_len;
+    uint16_t arg_len;
     uint8_t args[PROTO_MAX_ARGS];
-} proto_req_t;
+} proto_req_t; /* 2 KB: keep instances static, never on the 2 KB main stack */
 
 typedef enum {
     FRAME_NEED_MORE, /* no complete frame yet */
@@ -24,7 +24,7 @@ typedef enum {
 
 typedef struct {
     uint8_t buf[FRAME_REQ_MAX];
-    uint8_t len;
+    uint16_t len;
 } frame_parser_t;
 
 void frame_parser_reset(frame_parser_t *p);
@@ -40,7 +40,7 @@ void frame_resp_header(uint8_t hdr[PROTO_RESP_HDR_LEN], uint8_t cmd, uint8_t seq
 
 /* Encode a complete request (used by host-side tests). Returns the frame length. */
 unsigned frame_req_encode(uint8_t out[FRAME_REQ_MAX], uint8_t cmd, uint8_t seq, const uint8_t *args,
-                          uint8_t arg_len);
+                          uint16_t arg_len);
 
 static inline void put_le16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)v;

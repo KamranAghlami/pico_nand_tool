@@ -14,7 +14,8 @@ void nand_bus_init(void);
 /* The timing every phase below uses. The struct may change in place (SET_TIMING); the pointer must stay valid. */
 void nand_bus_use_timing(const timing_t *t);
 
-/* Back to the idle state from anywhere (panic handler): CE# high first, then CLE/ALE low, strobes high, IO input. */
+/* Back to the idle state from anywhere (panic handler): WP# low and write window closed, CE# high, then CLE/ALE low,
+ * strobes high, IO input. */
 void nand_bus_park(void);
 
 /* CE# low, then t_cs. */
@@ -33,11 +34,26 @@ void nand_bus_wait_whr(void);
  * *busy_cycles (may be NULL) = clk_sys cycles from entry until R/B# was seen high, or 0 if it was never seen low. */
 bool nand_bus_wait_ready(uint32_t *busy_cycles);
 
+/* Same with an explicit R/B# timeout (program 2 ms, erase 20 ms). */
+bool nand_bus_wait_ready_us(uint32_t timeout_us, uint32_t *busy_cycles);
+
 /* Power-on wait (§4.1, Fig. 46): poll R/B# until high for at most timeout_us. No command precedes it, so no tWB. */
 bool nand_bus_wait_rb_high(uint32_t timeout_us);
 
 /* n data-output cycles (Fig. 15): IO to input, then per byte RE# low, t_rea, sample, RE# high, t_reh. Ends with
  * t_rhw, so the bus may be driven again right after. The caller has already waited t_whr or t_rr. */
 void nand_bus_read(uint8_t *buf, uint32_t n);
+
+/* ---- write mode: only nand_write.c may call these (tests/check_gate_calls.sh) --------------------------------- */
+
+/* Open the write window: WP# high, then t_ww (tWW). Write opcodes and data input panic outside it. */
+void nand_bus_write_window_open(void);
+
+/* Close it: WP# low (also aborts a running program/erase, §4.3). Call on every return path. */
+void nand_bus_write_window_close(void);
+
+/* n data-input cycles (Fig. 14/19): t_adl, then per byte data on IO, t_setup, WE# pulse t_wp, t_wh. Panics unless the
+ * window is open and 80h + 5 address cycles came just before. */
+void nand_bus_data_in(const uint8_t *buf, uint32_t n);
 
 #endif
