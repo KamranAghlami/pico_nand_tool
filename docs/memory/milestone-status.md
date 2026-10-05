@@ -77,6 +77,11 @@ metadata:
   8x ERR_NOT_ARMED + 1x ERR_BAD_ARGS, SR 60h, block still blank, PASS; `write final.bin --dry-run` (4:52) 0 bad
   target blocks, 2048 identical, nothing to write.
   Block 80 is the W3 sacrificial block. W3 next.
+- 2026-10-05: **W3 APPROVED by the user.** First real erase, block 80 (blank in final.bin): `erase --block 80` → SR
+  E0h (bit 7 = 1, so WP# rose), busy 1144 us (below the 3.5 ms typ; tBERS has no minimum, and the block was already
+  blank), verified all FFh; `status` 60h afterwards; `read --block 80 --repeat 10` 64/64 FFh, stable;
+  `write final.bin --dry-run` 2048/2048 identical. `nandtool erase` now prints SR + busy (210275e). In auto mode the
+  permission classifier refuses `nandtool erase` even with an allow rule; the user switched to the default mode.
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after
