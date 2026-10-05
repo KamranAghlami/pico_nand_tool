@@ -205,7 +205,8 @@ the device is armed and the block lies in the armed range.
   `ERR_WP_STUCK`. `ERR_BAD_ARGS`, `ERR_NOT_ARMED` and `ERR_BAD_BLOCK` leave it as it is.
 - Erase and program are single-response commands (no stream). During a `READ_PAGES` stream they get `ERR_BUSY`.
 - **The host must not re-send an erase or program after a lost response**: it cannot know whether it ran. The host
-  tool re-does the whole block instead (erase, program, verify). An `ERR_CRC` response is safe to retry: nothing ran.
+  tool re-does the whole block instead (erase, program, and verify if asked). An `ERR_CRC` response is safe to retry:
+  nothing ran.
 
 Check order: `ERR_BAD_ARGS` (lengths, block < 2048, page < 131072, flags) → `ERR_NOT_ARMED` → (erase only) marker
 check → the operation.

@@ -44,9 +44,10 @@ pages, WP# handling changes, skipping the arm) needs a SPEC change by the user f
 - The dump is the only copy of the data. The host tool never overwrites an existing output file without `--force`.
   It never zero-fills or "guesses" pages; unreadable or unstable pages are flagged, not fixed silently.
 - The host tool never erases without typed confirmation or `--yes`, saves the target's bad-block markers before the
-  first erase, verifies every written block by readback, and stops at the first failure. It never re-sends an erase
-  or program request automatically after a lost response (it re-does the whole block instead), and never marks,
-  remaps or skips a failing block silently.
+  first erase, checks the status of every erase/program, verifies every written block by readback when asked
+  (`--verify`, off by default since 2026-10-05 by the user's SPEC change; a run without it says so), and stops at
+  the first failure. It never re-sends an erase or program request automatically after a lost response (it re-does
+  the whole block instead), and never marks, remaps or skips a failing block silently.
 - Never claim a hardware milestone (M0–M6, W2–W7) passed without the user's pasted output. At each hardware
   milestone, stop and tell the user exactly what to run and what output to expect.
 

@@ -12,6 +12,9 @@ Implementation details that differ from the text below (W1, 2026-10-05):
   a different chip).
 - `write` flags: `--first-block` (not `--start-block`), plus `--dry-run` and `--fresh`. W2 uses a new
   `nandtool interlock-test --block B` on a blank block.
+- After W6 (2026-10-05) the user made the readback opt-in: `erase`, `program` and `write` read back only with
+  `--verify`, and say so when they don't. The chip's status is still checked after every operation. SPEC.md was
+  changed accordingly; the "verifies every programmed block" text in §9 below is superseded.
 
 Datasheet references are to doc 002-00676 Rev \*W (`docs/datasheet.pdf`), as in `PROPOSAL.md`.
 

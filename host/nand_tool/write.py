@@ -1,10 +1,12 @@
-"""Write mode on the host: block erase and page program with readback verification, and the `write IMAGE` job
-(docs/WRITE_PROPOSAL.md §5-6, docs/PROTOCOL.md "Write mode").
+"""Write mode on the host: block erase and page program with optional readback verification, and the `write IMAGE`
+job (docs/WRITE_PROPOSAL.md §5-6, docs/PROTOCOL.md "Write mode").
 
 Rules (docs/CLAUDE.md "Hard safety rules"):
 - The device is armed for exactly one block at a time, and disarmed after it.
-- An erase or program whose response is lost is never re-sent: the whole block is re-done (erase, program, verify).
-- Every written block is read back and compared with what was meant to be written. A mismatch stops the job.
+- An erase or program whose response is lost is never re-sent: the whole block is re-done (erase, program, and
+  verify if asked).
+- With verify=True every written block is read back and compared with what was meant to be written, and a mismatch
+  stops the job. Without it, only the chip's status (SR pass/fail) is checked (docs/SPEC.md: readback on request).
 - The target's bad-block markers are read before the first erase and kept in the sidecar (§9.2: an erase can destroy
   them). Blocks marked bad are never erased.
 - Nothing is marked, remapped or skipped silently: every block's outcome is reported.
@@ -108,7 +110,7 @@ def erase_block(client: Client, block: int, *, ignore_bad_marker: bool = False) 
         disarm_quietly(client)
 
 
-def verify(client: Client, block: int, want: list[bytes]) -> None:
+def verify_block(client: Client, block: int, want: list[bytes]) -> None:
     """Read the block back; pages that differ are read once more before the job stops."""
     got = read_block(client, block)
     bad = [i for i in range(PAGES_PER_BLOCK) if got[i] != want[i]]
@@ -125,8 +127,11 @@ def verify(client: Client, block: int, want: list[bytes]) -> None:
         )
 
 
-def write_block(client: Client, block: int, pages: list[bytes], *, ignore_bad_marker: bool = False) -> int:
-    """Erase `block`, program its pages that are not all FFh, read back and compare. Returns pages programmed.
+def write_block(
+    client: Client, block: int, pages: list[bytes], *, ignore_bad_marker: bool = False, verify: bool = False
+) -> int:
+    """Erase `block`, program its pages that are not all FFh and, with verify=True, read back and compare. Returns
+    pages programmed.
 
     A lost response re-does the whole block (at most BLOCK_ATTEMPTS times); device errors (bad block, op failed, WP#
     stuck) propagate at once. The device is armed for this block only and disarmed afterwards."""
@@ -149,7 +154,8 @@ def write_block(client: Client, block: int, pages: list[bytes], *, ignore_bad_ma
             if attempt == BLOCK_ATTEMPTS:
                 raise WriteError(f"block {block}: response lost on {attempt} attempts, giving up: {e}") from e
             continue
-        verify(client, block, pages)
+        if verify:
+            verify_block(client, block, pages)
         return programmed
     raise AssertionError("unreachable")
 
@@ -398,10 +404,12 @@ class BlockDone:
     total: int
 
 
-def run_plan(client: Client, plan: Plan, *, progress: Callable[[BlockDone], None] | None = None) -> int:
-    """Write every "write" entry in order; returns the number of blocks written. Saves the sidecar (target markers
-    first, then the block in progress) before each erase, so an interrupted run re-does that block. Raises on
-    conflicts and on the first failure."""
+def run_plan(
+    client: Client, plan: Plan, *, verify: bool = False, progress: Callable[[BlockDone], None] | None = None
+) -> int:
+    """Write every "write" entry in order (read back and compared when verify=True); returns the number of blocks
+    written. Saves the sidecar (target markers first, then the block in progress) before each erase, so an
+    interrupted run re-does that block. Raises on conflicts and on the first failure."""
     if plan.conflicts:
         raise WriteError(f"{len(plan.conflicts)} target bad block(s) would receive image data; nothing was written")
     info = client.ping()
@@ -411,6 +419,7 @@ def run_plan(client: Client, plan: Plan, *, progress: Callable[[BlockDone], None
         "chip_id": _hex(EXPECTED_ID),
         "mapping": plan.mapping,
         "only_changed": plan.only_changed,
+        "verify": verify,
         "target_bad": {str(b): {str(p): v for p, v in m.items()} for b, m in sorted(plan.target_bad.items())},
         "in_progress": plan.resumed_block,
         "blocks_written": [],
@@ -428,7 +437,7 @@ def run_plan(client: Client, plan: Plan, *, progress: Callable[[BlockDone], None
             assert e.target_block is not None
             meta["in_progress"] = e.target_block
             _save_sidecar(plan.image.path, meta)
-            programmed = write_block(client, e.target_block, plan.image.block(e.image_block))
+            programmed = write_block(client, e.target_block, plan.image.block(e.image_block), verify=verify)
             meta["blocks_written"].append(e.target_block)
             meta["in_progress"] = None
             _save_sidecar(plan.image.path, meta)

@@ -9,7 +9,7 @@ Deliverables:
 1. Pico firmware (C, Pico SDK, TinyUSB) that bit-bangs the NAND bus and streams pages over USB.
 2. A Python host tool that drives the firmware, verifies transfers, dumps the chip with retries and multi-pass verification, and writes the image.
 3. Post-processing helpers: data/OOB split and factory bad-block scan.
-4. Write mode: block erase and full-page program, armed at runtime, with readback verification (see "Write mode").
+4. Write mode: block erase and full-page program, armed at runtime, with readback verification on request (`--verify`; see "Write mode").
 
 The datasheet is in `docs/` (S34ML01G1/S34ML02G1/S34ML04G1, Rev *W). **Treat it as the source of truth** for all commands and timings; cite section/table numbers in code comments.
 
@@ -20,7 +20,7 @@ The datasheet is in `docs/` (S34ML01G1/S34ML02G1/S34ML04G1, Rev *W). **Treat it 
 - WP# is wired to GP13 with a 10k external pull-down to GND (see pin map). The firmware drives it **low** as the first thing it does at boot. It drives WP# high **only** for the duration of a single armed program or erase operation (≥ tWW before the setup command), and low again right after, or at once on timeout or error (which aborts the operation, datasheet §4.3). It never pulls it up. A fault, panic or hang must leave WP# low.
 - The firmware never erases a block whose factory bad-block marker (§9.2) is not `FFh`, unless the host explicitly overrides it for that one request.
 - The dump is the only copy of the data. The host tool must never overwrite an existing output file without an explicit flag.
-- Before erasing, the host tool warns loudly and requires typed confirmation (or an explicit `--yes`), and checks a `--backup` against the chip when one is given. It saves the target's bad-block markers before the first erase, verifies every written block by readback, and stops at the first failure. It never marks, remaps or skips a failing block silently.
+- Before erasing, the host tool warns loudly and requires typed confirmation (or an explicit `--yes`), and checks a `--backup` against the chip when one is given. It saves the target's bad-block markers before the first erase, checks the chip's status after every erase and program, verifies every written block by readback when asked (`--verify`; off by default, and a run without it says so), and stops at the first failure. It never marks, remaps or skips a failing block silently.
 
 ## Hardware
 
@@ -110,9 +110,9 @@ Subcommands:
 
 Write mode (protocol v2, `docs/PROTOCOL.md`):
 
-- `erase --block B [--count N]`: erase blocks (typed confirmation), verify all `FFh`.
-- `program --page N --in FILE`: program one 2112-byte page into an erased page, verify by readback.
-- `write IMAGE`: write a raw image. Default **only-changed**: blocks identical on the chip are skipped, so a patched image erases only the patched blocks. Block map `1:1` (default; refuses before any erase if a target bad block would receive data) or `skip-bad`. Pages that are all `FFh` are not programmed. Every written block is read back and compared. ECC/OOB is written raw, never recomputed.
+- `erase --block B [--count N] [--verify]`: erase blocks (typed confirmation); with `--verify`, check they read all `FFh`.
+- `program --page N --in FILE [--verify]`: program one 2112-byte page into an erased page; with `--verify`, read it back and compare.
+- `write IMAGE`: write a raw image. Default **only-changed**: blocks identical on the chip are skipped, so a patched image erases only the patched blocks. Block map `1:1` (default; refuses before any erase if a target bad block would receive data) or `skip-bad`. Pages that are all `FFh` are not programmed. With `--verify`, every written block is read back and compared, and the first mismatch stops the job. ECC/OOB is written raw, never recomputed.
 - `badblocks --device`: scan the chip's bad-block markers live; `badblocks IMAGE --blank`: list all-`FFh` blocks.
 
 Also provide a **fake device** (Python class simulating the firmware protocol over a synthetic NAND image, with injectable transport errors and bitflips; in write mode it models erase, AND-only programming, NOP counts, arming and program/erase failures) so all host logic is unit-tested without hardware. Use pytest.

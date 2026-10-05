@@ -193,13 +193,18 @@ def test_write_ops_get_busy_during_a_stream(client, dev):
 # ---- write_block ------------------------------------------------------------------------------------------------
 
 
-def test_write_block_programs_non_blank_pages_and_verifies(client, dev):
+@pytest.mark.parametrize("verify", [False, True])
+def test_write_block_programs_non_blank_pages(client, dev, verify):
     pages = [page_of(i) if i % 3 else ERASED_PAGE for i in range(PPB)]
-    n = write_block(client, 9, pages)
+    dev.page_reads.clear()
+    n = write_block(client, 9, pages, verify=verify)
     assert n == sum(1 for p in pages if p != ERASED_PAGE)
     assert [dev.chip_page(9 * PPB + i) for i in range(PPB)] == pages
     assert dev.ops[0] == ("erase", 9) and len(dev.ops) == 1 + n
     assert dev.armed is None and not dev.nop_violations
+    # Only the erase's marker check (pages 0, 1, 63) reads the array, unless the block is read back.
+    read_back = [p for p in dev.page_reads if p not in (9 * PPB, 9 * PPB + 1, 10 * PPB - 1)]
+    assert len(read_back) == (PPB - 3 if verify else 0)
 
 
 def test_write_block_redoes_the_block_after_a_lost_response(client, dev):
@@ -221,7 +226,14 @@ def test_write_block_verify_failure_stops(client, dev):
     dev.flaky_bits = {9 * PPB + 2: [(100, 0x04)]}
     dev.flip_on = lambda page, n: True
     with pytest.raises(WriteError, match=r"verify FAILED on 1 page\(s\) \(578\).*offset 100"):
-        write_block(client, 9, [page_of(i) for i in range(PPB)])
+        write_block(client, 9, [page_of(i) for i in range(PPB)], verify=True)
+
+
+def test_write_block_without_verify_does_not_read_back(client, dev):
+    dev.flaky_bits = {9 * PPB + 2: [(100, 0x04)]}
+    dev.flip_on = lambda page, n: True
+    write_block(client, 9, [page_of(i) for i in range(PPB)])  # the bad readback is never seen: no error
+    assert dev.armed is None
 
 
 def test_write_block_op_failure_propagates(client, dev):
@@ -374,8 +386,16 @@ def run(dev: FakeDevice, *argv: str) -> int:
 def test_cli_erase_with_yes(dev, capsys):
     assert run(dev, "erase", "--block", "5", "--count", "2", "--yes") == 0
     out = capsys.readouterr().out
-    assert "block 5   : erased (SR E0h, busy 3500 us), verified all FFh" in out and "result   : PASS" in out
+    assert "verify   : off" in out and "result   : PASS" in out
+    assert "block 5   : erased (SR E0h, busy 3500 us)\n" in out
     assert dev.ops == [("erase", 5), ("erase", 6)] and dev.armed is None
+
+
+def test_cli_erase_verify(dev, capsys):
+    assert run(dev, "erase", "--block", "5", "--yes", "--verify") == 0
+    out = capsys.readouterr().out
+    assert "verify   : off" not in out
+    assert "block 5   : erased (SR E0h, busy 3500 us), verified all FFh" in out and "result   : PASS" in out
 
 
 def test_cli_erase_needs_confirmation(dev, capsys, monkeypatch):
@@ -405,8 +425,12 @@ def test_cli_program(dev, tmp_path, capsys):
     dev.erase(2)
     assert run(dev, "program", "--page", "130", "--in", str(f)) == 0
     out = capsys.readouterr().out
-    assert "status   : E0h" in out and "readback identical" in out
+    assert "status   : E0h" in out and "verify   : off" in out and "result   : PASS" in out
     assert dev.chip_page(130) == page_of(42) and dev.armed is None
+    f.write_bytes(page_of(43))
+    assert run(dev, "program", "--page", "131", "--in", str(f), "--verify") == 0
+    out = capsys.readouterr().out
+    assert "readback identical" in out and "result   : PASS" in out
 
 
 def test_cli_write_dry_run_then_write(dev, tmp_path, capsys):
@@ -418,9 +442,28 @@ def test_cli_write_dry_run_then_write(dev, tmp_path, capsys):
     assert run(dev, "write", str(img.path), "--start", "0", "--yes") == 0
     out = capsys.readouterr().out
     assert "WARNING  : no --backup given" in out and "result   : PASS" in out
+    assert "verify   : off" in out and "not read back (no --verify)" in out
+    assert json.loads((tmp_path / "img.bin.write.json").read_text())["verify"] is False
     assert [op for op in dev.ops if op[0] == "erase"] == [("erase", 1)]
     assert run(dev, "write", str(img.path), "--start", "0", "--yes") == 0
     assert "nothing to write" in capsys.readouterr().out
+
+
+def test_cli_write_verify(dev, tmp_path, capsys):
+    img = make_image(tmp_path / "img.bin", dev, range(0, 2), lambda pages: pages[0].__setitem__(0, 0))
+    assert run(dev, "write", str(img.path), "--start", "0", "--yes", "--verify") == 0
+    out = capsys.readouterr().out
+    assert "verify   : off" not in out and "written (" in out and ", verified  [1/1" in out
+    assert "every one verified by readback" in out and "result   : PASS" in out
+    assert json.loads((tmp_path / "img.bin.write.json").read_text())["verify"] is True
+
+
+def test_cli_write_verify_mismatch_fails(dev, tmp_path, capsys):
+    img = make_image(tmp_path / "img.bin", dev, range(0, 2), lambda pages: pages[0].__setitem__(0, 0))
+    dev.flaky_bits = {5: [(100, 0x04)]}
+    dev.flip_on = lambda page, n: True
+    assert run(dev, "write", str(img.path), "--start", "0", "--yes", "--verify") == 1
+    assert "verify FAILED" in capsys.readouterr().err
 
 
 def test_cli_write_conflict_exits_1(dev, tmp_path, capsys):

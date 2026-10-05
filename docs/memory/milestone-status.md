@@ -104,6 +104,12 @@ metadata:
   + ~170 ms verify read + ~13 ms erase/arm. Host→device runs at ~290 KB/s (linear, ~3.4 us/byte, measured with
   refused requests) vs ~770 KB/s device→host, on WSL2/usbip. Not yet known whether usbip or the RP2040 OUT path
   is the limit; a native-USB (macOS) run would tell.
+- 2026-10-05: **User decision: readback is opt-in.** `erase`, `program` and `write` read back only with `--verify`
+  (they print "verify : off" otherwise; the SR status check after every op stays). The user chose this over an
+  opt-out `--no-verify` after hearing that verify is ~24% of write time and the only end-to-end check of the
+  bit-banged data path. SPEC.md, the docs/CLAUDE.md hard rule, PROTOCOL.md, README and a WRITE_PROPOSAL note were
+  updated. Checked on hardware on block 80 (erase with/without --verify; pattern write without, `--dry-run` matched;
+  restored blank with --verify).
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after

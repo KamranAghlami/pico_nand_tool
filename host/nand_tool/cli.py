@@ -528,12 +528,17 @@ def cmd_erase(client: Client, args: argparse.Namespace) -> int:
               "destroying the factory marking.", file=sys.stderr)
         return 1
     print("WARNING  : erasing destroys the data in these blocks. There is no undo; keep a dump.")
+    if not args.verify:
+        print("verify   : off (the chip's status is checked; --verify also reads every block back)")
     if not _confirm(args, f"ERASE {_blocks_word(count)}"):
         return 1
     for b in blocks:
         r = erase_block(client, b, ignore_bad_marker=args.ignore_bad_marker)
         # An erase of a blank block reads back the same either way; SR bit 7 and the busy time show it really ran.
         done = f"erased (SR {r.sr:02X}h, busy {r.busy_ns / 1000:.0f} us)"
+        if not args.verify:
+            print(f"block {b:<4}: {done}")
+            continue
         left = sum(1 for p in read_block(client, b) if p != ERASED_PAGE)
         if left:
             print(f"block {b:<4}: {done}, but {left} page(s) do not read all FFh: VERIFY FAILED")
@@ -568,6 +573,10 @@ def cmd_program(client: Client, args: argparse.Namespace) -> int:
     finally:
         disarm_quietly(client)
     print(f"status   : {r.sr:02X}h, busy {r.busy_ns / 1000:.0f} us")
+    if not args.verify:
+        print("verify   : off (--verify reads the page back)")
+        print("result   : PASS")
+        return 0
     back = read_range(client, page, 1)[0]
     if back != data:
         diff = [o for o in range(PAGE_SIZE) if back[o] != data[o]]
@@ -647,22 +656,28 @@ def cmd_write(client: Client, args: argparse.Namespace) -> int:
     else:
         print("WARNING  : no --backup given. Erased data cannot be recovered without a dump of this chip.")
     print(f"WARNING  : {len(writes)} block(s) will be erased and rewritten. There is no undo.")
+    if not args.verify:
+        print("verify   : off: written blocks are not read back, only the chip's status is checked. --verify reads "
+              "each one back; `write IMAGE --dry-run` afterwards compares the whole range.")
     if not _confirm(args, f"ERASE {_blocks_word(len(writes))}"):
         return 1
 
     tty = sys.stderr.isatty()
     t0 = time.monotonic()
 
+    checked = ", verified" if args.verify else ""
+
     def block_progress(d: BlockDone) -> None:
-        line = (f"block {d.entry.target_block:<4}: written ({d.programmed} pages), verified  [{d.index}/{d.total}, "
+        line = (f"block {d.entry.target_block:<4}: written ({d.programmed} pages){checked}  [{d.index}/{d.total}, "
                 f"{_duration(time.monotonic() - t0)}]")
         if tty:
             print("\r" + line, end="\n" if d.index == d.total else "", file=sys.stderr, flush=True)
         else:
             print(line, flush=True)
 
-    n = run_plan(client, plan, progress=block_progress)
-    print(f"written  : {n} block(s) in {_duration(time.monotonic() - t0)}, every one verified by readback")
+    n = run_plan(client, plan, verify=args.verify, progress=block_progress)
+    how = "every one verified by readback" if args.verify else "not read back (no --verify)"
+    print(f"written  : {n} block(s) in {_duration(time.monotonic() - t0)}, {how}")
     print(f"sidecar  : {sidecar_path(image.path).name}")
     print("result   : PASS")
     return 0
@@ -852,20 +867,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_badblocks, needs_device=lambda a: a.device)
 
     # ---- write mode ----
-    sp = sub.add_parser("erase", help="erase blocks (typed confirmation), then verify they read all FFh")
+    sp = sub.add_parser("erase", help="erase blocks (typed confirmation); --verify checks they read all FFh")
     sp.add_argument("--block", type=_block_index, required=True, metavar="B", help="first block (0..2047)")
     sp.add_argument("--count", type=_positive_int, default=1, metavar="N", help="number of blocks (default 1)")
     sp.add_argument("--ignore-bad-marker", action="store_true",
                     help="erase blocks marked bad too (destroys the factory marking, §9.2)")
     sp.add_argument("--yes", action="store_true", help="skip the typed confirmation (for scripts)")
+    sp.add_argument("--verify", action="store_true", help="read every erased block back and check it is all FFh")
     sp.set_defaults(func=cmd_erase)
 
-    sp = sub.add_parser("program", help="program one erased page from a 2112-byte file, then verify by readback")
+    sp = sub.add_parser("program", help="program one erased page from a 2112-byte file; --verify reads it back")
     sp.add_argument("--page", type=_page_index, required=True, metavar="N", help="page (0..131071)")
     sp.add_argument("--in", dest="infile", required=True, metavar="FILE", help="2112 bytes: 2048 data + 64 spare")
+    sp.add_argument("--verify", action="store_true", help="read the page back and compare it with FILE")
     sp.set_defaults(func=cmd_program)
 
-    sp = sub.add_parser("write", help="write a raw image: erase + program changed blocks, verify each by readback")
+    sp = sub.add_parser("write", help="write a raw image: erase + program changed blocks; --verify reads each back")
     sp.add_argument("image")
     sp.add_argument("--start", type=_page_index, metavar="N", help="chip page of the first image page (default: "
                     "from the sidecar, else 0)")
@@ -881,6 +898,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--fresh", action="store_true", help="ignore an unfinished earlier run's sidecar (e.g. a "
                     "different chip)")
     sp.add_argument("--yes", action="store_true", help="skip the typed confirmation (for scripts)")
+    sp.add_argument("--verify", action="store_true", help="read every written block back and compare it with the "
+                    "image; stop at the first mismatch")
     sp.set_defaults(func=cmd_write)
 
     sp = sub.add_parser("interlock-test", help="W2: check that erase/program are refused unless armed (uses one "

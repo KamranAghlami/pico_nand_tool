@@ -3,7 +3,7 @@
 A Raspberry Pi Pico (RP2040) based raw NAND tool. The Pico bit-bangs a Spansion/SkyHigh S34ML02G1 (2 Gb SLC, ×8,
 BGA63) and streams full raw pages (data + OOB) over USB to a Python host tool. The host tool verifies, retries,
 compares and reconciles multi-pass dumps. A **write mode** erases blocks and programs full pages, armed at runtime,
-with every written block verified by readback.
+and reads every written block back when asked (`--verify`).
 
 - Requirements: [`docs/SPEC.md`](docs/SPEC.md)
 - Wire protocol: [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
@@ -206,14 +206,15 @@ expected : 01 DA 90 95 44 (S34ML02G1 x8): match
 ### Write mode
 
 Write mode needs firmware 0.2.0 or later (protocol v2). Every erase and program is armed for exactly one block and
-disarmed after it; a lost response is never re-sent (the whole block is re-done instead); every written block is read
-back and compared. Erasing asks you to type a confirmation such as `ERASE 3 BLOCKS` (`--yes` skips it, for scripts).
+disarmed after it; a lost response is never re-sent (the whole block is re-done instead); the chip's status is checked
+after every erase and program, and with `--verify` every written block is also read back and compared. Erasing asks you
+to type a confirmation such as `ERASE 3 BLOCKS` (`--yes` skips it, for scripts).
 
 | Command | What it does |
 |---|---|
-| `nandtool erase --block B [--count N] [--ignore-bad-marker] [--yes]` | Reads the blocks' bad-block markers first and refuses bad blocks (unless `--ignore-bad-marker`, which destroys the factory marking). Erases each block and checks it reads all FFh. |
-| `nandtool program --page N --in FILE` | Programs one 2112-byte page (2048 data + 64 spare). Refuses unless the page is erased (all FFh). Reads it back and compares. |
-| `nandtool write IMAGE [--first-block B --count N] [--map 1:1\|skip-bad] [--all] [--backup DUMP] [--dry-run] [--fresh] [--yes]` | Writes a raw image (2112 B per page, whole blocks; the start page comes from its `.meta.json`, or `--start`). First it reads the target's bad-block markers (saved in `IMAGE.write.json` before any erase) and, by default (**only-changed**), every target block: blocks that already match are skipped, so a patched image only erases the patched blocks. `--all` rewrites every block. `--map 1:1` (default) refuses, before erasing anything, if a bad target block would receive data; `--map skip-bad` shifts the image past bad target blocks (what a bootloader or UBI usually expects; a positional controller needs 1:1). Blocks marked bad in the image are not written. Pages that are all FFh are not programmed. `--backup DUMP` checks 64 random pages of a dump against the chip; without it you get a loud warning. `--dry-run` stops after the plan. An interrupted run is picked up by running it again: the block in progress is always re-written. ECC/OOB bytes are written as they are in the image, never recomputed. |
+| `nandtool erase --block B [--count N] [--ignore-bad-marker] [--yes] [--verify]` | Reads the blocks' bad-block markers first and refuses bad blocks (unless `--ignore-bad-marker`, which destroys the factory marking). Erases each block and prints its status and busy time; `--verify` also checks it reads all FFh. |
+| `nandtool program --page N --in FILE [--verify]` | Programs one 2112-byte page (2048 data + 64 spare). Refuses unless the page is erased (all FFh). `--verify` reads it back and compares. |
+| `nandtool write IMAGE [--first-block B --count N] [--map 1:1\|skip-bad] [--all] [--backup DUMP] [--dry-run] [--fresh] [--yes] [--verify]` | Writes a raw image (2112 B per page, whole blocks; the start page comes from its `.meta.json`, or `--start`). First it reads the target's bad-block markers (saved in `IMAGE.write.json` before any erase) and, by default (**only-changed**), every target block: blocks that already match are skipped, so a patched image only erases the patched blocks. `--all` rewrites every block. `--map 1:1` (default) refuses, before erasing anything, if a bad target block would receive data; `--map skip-bad` shifts the image past bad target blocks (what a bootloader or UBI usually expects; a positional controller needs 1:1). Blocks marked bad in the image are not written. Pages that are all FFh are not programmed. `--backup DUMP` checks 64 random pages of a dump against the chip; without it you get a loud warning. `--dry-run` stops after the plan. Every erase and program must report pass in the chip's status; `--verify` also reads each written block back and stops at the first mismatch (about a quarter of the write time). Without it, `write IMAGE --dry-run` afterwards compares the whole range. An interrupted run is picked up by running it again: the block in progress is always re-written. ECC/OOB bytes are written as they are in the image, never recomputed. |
 | `nandtool interlock-test --block B` | Hardware check of the write interlocks, on a block that must be all FFh: erase/program while not armed, armed for another block, after `DISARM`, after `RESET`, after the idle timeout and after a wrong-token arm must all be refused (`ERR_NOT_ARMED`), WP# must read low afterwards and the block must still be blank. |
 
 ### Not implemented
@@ -235,7 +236,7 @@ nandtool split final.bin                                                 # → d
 
 # write mode: patch final.bin into patched.bin, then
 nandtool write patched.bin --start 0 --backup final.bin --dry-run         # what would change
-nandtool write patched.bin --start 0 --backup final.bin                   # erase + program the changed blocks
+nandtool write patched.bin --start 0 --backup final.bin --verify          # erase + program the changed blocks
 ```
 
 ## Tests
