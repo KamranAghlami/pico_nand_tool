@@ -374,7 +374,7 @@ def run(dev: FakeDevice, *argv: str) -> int:
 def test_cli_erase_with_yes(dev, capsys):
     assert run(dev, "erase", "--block", "5", "--count", "2", "--yes") == 0
     out = capsys.readouterr().out
-    assert "block 5   : erased, verified all FFh" in out and "result   : PASS" in out
+    assert "block 5   : erased (SR E0h, busy 3500 us), verified all FFh" in out and "result   : PASS" in out
     assert dev.ops == [("erase", 5), ("erase", 6)] and dev.armed is None
 
 

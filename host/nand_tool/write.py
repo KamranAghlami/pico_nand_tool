@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
-from .client import Client, LostResponse
+from .client import Client, LostResponse, WriteResult
 from .dump import load_meta
 from .errors import NandToolError
 from .geometry import EXPECTED_ID, PAGE_DATA, PAGE_SIZE, PAGES_PER_BLOCK, TOTAL_PAGES
@@ -99,11 +99,11 @@ def disarm_quietly(client: Client) -> None:
         client.disarm()
 
 
-def erase_block(client: Client, block: int, *, ignore_bad_marker: bool = False) -> None:
+def erase_block(client: Client, block: int, *, ignore_bad_marker: bool = False) -> WriteResult:
     """Arm for this block only, erase it, disarm."""
     client.arm_write(block, block, ARM_IDLE_S)
     try:
-        client.erase_block(block, ignore_bad_marker=ignore_bad_marker)
+        return client.erase_block(block, ignore_bad_marker=ignore_bad_marker)
     finally:
         disarm_quietly(client)
 

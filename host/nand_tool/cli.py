@@ -531,13 +531,15 @@ def cmd_erase(client: Client, args: argparse.Namespace) -> int:
     if not _confirm(args, f"ERASE {_blocks_word(count)}"):
         return 1
     for b in blocks:
-        erase_block(client, b, ignore_bad_marker=args.ignore_bad_marker)
+        r = erase_block(client, b, ignore_bad_marker=args.ignore_bad_marker)
+        # An erase of a blank block reads back the same either way; SR bit 7 and the busy time show it really ran.
+        done = f"erased (SR {r.sr:02X}h, busy {r.busy_ns / 1000:.0f} us)"
         left = sum(1 for p in read_block(client, b) if p != ERASED_PAGE)
         if left:
-            print(f"block {b:<4}: erased, but {left} page(s) do not read all FFh: VERIFY FAILED")
+            print(f"block {b:<4}: {done}, but {left} page(s) do not read all FFh: VERIFY FAILED")
             print("result   : FAIL")
             return 1
-        print(f"block {b:<4}: erased, verified all FFh")
+        print(f"block {b:<4}: {done}, verified all FFh")
     print("result   : PASS")
     return 0
 
