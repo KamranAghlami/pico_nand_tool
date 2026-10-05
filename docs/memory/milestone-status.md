@@ -82,6 +82,13 @@ metadata:
   blank), verified all FFh; `status` 60h afterwards; `read --block 80 --repeat 10` 64/64 FFh, stable;
   `write final.bin --dry-run` 2048/2048 identical. `nandtool erase` now prints SR + busy (210275e). In auto mode the
   permission classifier refuses `nandtool erase` even with an allow rule; the user switched to the default mode.
+- 2026-10-05: **W4 PASSED** (run in the session; the user had said "when passed, commit & push, then onto the next
+  milestone"). Block 80, 64 pattern pages x 2112 B incl. OOB: 00, FF, 55, AA, 55/AA, AA/55, walking 1/0 (8 each),
+  incr, decr, 1<<(o%8), seeded random (seed 0x5733 + page index); spare byte 0 kept FFh on pages 0, 1, 63 so the
+  block does not look factory-bad (§9.2). `program` per page: SR E0h, busy 201-203 us (typ 200), readback identical.
+  `read --block 80 --repeat 100` stable; dump of the block = pattern (sha256 4f311790…5159). Erase back: SR E0h,
+  busy 1146 us, so ~1.1 ms is this chip's tBERS whether the block is blank or not (max 10 ms). Then 64/64 FFh x10,
+  and `write final.bin --dry-run` 2048/2048 identical.
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after
