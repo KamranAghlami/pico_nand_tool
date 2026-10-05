@@ -70,6 +70,13 @@ metadata:
   host erase/program/write/interlock-test, badblocks --device/--blank. make check, SDK build and 188 host tests
   pass. Nothing run on hardware yet. Next: W2 (flash 0.2.0, read regressions, `interlock-test` on a block that is
   blank in final.bin, `badblocks --device`, `write final.bin --dry-run` should find nothing to write).
+- 2026-10-05: **W2 APPROVED by the user** (WSL machine, firmware 0.2.0 (9c94a42), protocol v2). The old firmware had
+  hung behind a usbip glitch (`vhci_hcd ... urb->status -104`), so the 1200-baud reboot did nothing; the user put the
+  Pico in BOOTSEL by hand. Results: `status --reset` 60h; `id --repeat 1000 --onfi` 1000/1000 + ONFI; `param` 3 copies
+  CRC `3B C5`, PASS; page 0 x100 PASS; `badblocks --device` 0 bad (same as final.bin); `interlock-test --block 80`
+  8x ERR_NOT_ARMED + 1x ERR_BAD_ARGS, SR 60h, block still blank, PASS; `write final.bin --dry-run` (4:52) 0 bad
+  target blocks, 2048 identical, nothing to write.
+  Block 80 is the W3 sacrificial block. W3 next.
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after
