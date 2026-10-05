@@ -96,6 +96,14 @@ metadata:
   the original shows exactly those 18 bytes. Restored with `write final.bin --first-block 1024 --count 1` → dump =
   the original block; `write final.bin --dry-run` 2048/2048 identical. `write` leaves `<image>.write.json` (complete: true)
   next to the image, e.g. dumps/final.bin.write.json.
+- 2026-10-05: **W6 PASSED** (run in the session under the same go-ahead). `write final.bin --backup final.bin` →
+  nothing to write (4:54). `write final.bin --all --backup final.bin` → 2048 blocks written and
+  verified, 0 failures/retries, 22:42. Fresh `dump --out dumps/w6.bin` (5:24, 834 KiB/s, 0 retries) → the same
+  SHA-256, `compare` identical to final.bin. W7 (clone onto a second, blank chip) waits for that chip.
+  Write speed: ~715 ms per full block = 64 x ~7.6 ms to send the 2112 B PROGRAM_PAGE request + ~45 ms tPROG/replies
+  + ~170 ms verify read + ~13 ms erase/arm. Host→device runs at ~290 KB/s (linear, ~3.4 us/byte, measured with
+  refused requests) vs ~770 KB/s device→host, on WSL2/usbip. Not yet known whether usbip or the RP2040 OUT path
+  is the limit; a native-USB (macOS) run would tell.
 
 **Why:** SPEC forbids claiming a hardware milestone without the user's pasted output.
 **How to apply:** Update this file whenever the user confirms a milestone. Implement the next milestone only after
