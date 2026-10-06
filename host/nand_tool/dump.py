@@ -14,8 +14,8 @@ Techniques worth noticing:
   rename is atomic, so the sidecar is always either the old or the new version, never half-written JSON.
 - Resume: the file length says how far the dump got. A torn last page (crash in the middle of a write) is cut off
   with truncate(), and reading restarts at the next whole page.
-- Chunks of 1024 pages: each chunk is one READ_PAGES stream. Between chunks the chip ID is read again, so a chip that
-  shifted in its socket is noticed within ~2 MB instead of producing hundreds of MB of garbage.
+- Chunks of 1024 pages: each chunk is one READ_PAGES stream. Between chunks the chip ID is read again, so a connection
+  that comes loose is noticed within ~2 MB instead of producing hundreds of MB of garbage.
 - The sidecar's `sessions` list keeps one entry per run (firmware version, timing, retries...), so how the dump was
   made stays on record next to it.
 """
@@ -152,7 +152,7 @@ def dump(
     info = client.ping()
     idb = client.read_id()
     if idb != EXPECTED_ID:
-        raise DumpError(f"READ_ID is {_hex(idb)}, expected {_hex(EXPECTED_ID)}: refusing to dump (check the socket)")
+        raise DumpError(f"READ_ID is {_hex(idb)}, expected {_hex(EXPECTED_ID)}: refusing to dump (check the wiring)")
     mode, timing = client.get_timing()
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -215,10 +215,10 @@ def dump(
         while done < count:
             first = start + done
             n = min(chunk, count - done)
-            if session["pages_read"]:  # the chip may have lost contact in the socket since the last chunk
+            if session["pages_read"]:  # a connection to the chip may have come loose since the last chunk
                 idb = client.read_id()
                 if idb != EXPECTED_ID:
-                    raise DumpError(f"READ_ID changed to {_hex(idb)} before page {first}: check the socket")
+                    raise DumpError(f"READ_ID changed to {_hex(idb)} before page {first}: check the wiring")
             pages: list[bytes | None] = [None] * n
             # closing(): if anything goes wrong mid-chunk, the generator is closed, which aborts the device's stream
             # (Client.read_pages' `finally`) instead of leaving it running.

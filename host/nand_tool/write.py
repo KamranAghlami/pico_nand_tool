@@ -304,7 +304,7 @@ def build_plan(
         )
     idb = client.read_id()
     if idb != EXPECTED_ID:
-        raise WriteError(f"READ_ID is {_hex(idb)}, expected {_hex(EXPECTED_ID)}: refusing to write (check the socket)")
+        raise WriteError(f"READ_ID is {_hex(idb)}, expected {_hex(EXPECTED_ID)}: refusing to write (check the wiring)")
 
     saved = load_sidecar(image.path)
     target_bad: dict[int, dict[int, int]] = {}

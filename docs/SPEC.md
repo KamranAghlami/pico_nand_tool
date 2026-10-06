@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build a raw NAND dumper and writer using a Raspberry Pi Pico (RP2040) to extract a full raw image (data + OOB/spare) from a desoldered **Spansion S34ML02G100BHI00** (2 Gbit SLC NAND, x8, 3.3 V, BGA63) mounted in a BGA63 clamshell socket, and to write a raw image back to the same chip or onto another one (write mode, added 2026-10-05; design: `docs/WRITE_PROPOSAL.md`).
+Build a raw NAND dumper and writer using a Raspberry Pi Pico (RP2040) to extract a full raw image (data + OOB/spare) from a desoldered **Spansion S34ML02G100BHI00** (2 Gbit SLC NAND, x8, 3.3 V, BGA63), mounted dead-bug on perfboard and hand-wired to the Pico, and to write a raw image back to the same chip or onto another one (write mode, added 2026-10-05; design: `docs/WRITE_PROPOSAL.md`).
 
 Deliverables:
 
@@ -60,7 +60,7 @@ RP2040 notes:
 | GP12 | CE# | C6 | 10k external pull-up to 3V3 |
 | GP13 | WP# | C3 | **10k external pull-down to GND**. Firmware drives it low at boot; high only during one armed program/erase |
 | GP14 | R/B# | C8 | Input; open-drain, 10k external pull-up to 3V3 |
-| 3V3(OUT) pin 36 | VCC | D3, G4, H8, J6 | 100 nF + 10 µF at socket |
+| 3V3(OUT) pin 36 | VCC | D3, G4, H8, J6 | 100 nF + 10 µF at the chip |
 | GND | VSS | C5, F7, K3, K8 | |
 
 Keep pin assignments in one header so they can be changed. Note RP2040 pads reset with internal pull-downs; the external pull-ups keep CE#/WE#/RE# deasserted before firmware init. On init, drive CE#/WE#/RE# high *before* enabling them as outputs.

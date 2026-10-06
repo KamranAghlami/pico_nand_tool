@@ -26,10 +26,18 @@ onto a second blank chip, is still to do.
 ### Parts
 
 - Raspberry Pi Pico (RP2040). The firmware targets the plain Pico, not the Pico W.
-- BGA63 (9 × 11 mm) clamshell socket holding the S34ML02G100BHI00.
+- The S34ML02G100BHI00 (BGA63, 9 × 11 mm), mounted upside down ("dead bug") on a piece of perfboard. Each ball is
+  wired by hand with thin insulated wire, and the perfboard is soldered straight onto the Pico's pins.
 - 4 × 10 kΩ pull-up resistors to 3V3: WE#, RE#, CE#, R/B#.
 - 1 × 10 kΩ pull-down resistor to GND: WP#.
-- 100 nF + 10 µF decoupling capacitors at the socket, VCC to VSS.
+- 100 nF + 10 µF decoupling capacitors next to the chip, VCC to VSS.
+
+### The build
+
+| NAND side | Pico side |
+|---|---|
+| ![The NAND mounted upside down on perfboard, its balls hand-wired to the Pico's pins, with the pull-up resistors and decoupling capacitors](docs/build_nand_side.jpg) | ![The Raspberry Pi Pico underneath, soldered to the perfboard](docs/build_pico_side.jpg) |
+| The NAND upside down, each ball hand-wired; the pull-up/pull-down resistors and decoupling capacitors on the same board. | The Pico underneath, soldered straight to the perfboard. |
 
 ### Wiring (Pico → NAND BGA63 ball)
 
@@ -52,7 +60,7 @@ The pin map lives in [`firmware/src/pins.h`](firmware/src/pins.h). Change it the
 | GP12 | 16 | CE# | C6 | 10 kΩ pull-up to 3V3 |
 | GP13 | 17 | **WP#** | C3 | **10 kΩ pull-down to GND**. The firmware drives it low, never high. |
 | GP14 | 19 | R/B# | C8 | open drain, 10 kΩ pull-up to 3V3 |
-| 3V3(OUT) | 36 | VCC | D3, G4, H8, J6 | 100 nF + 10 µF at the socket |
+| 3V3(OUT) | 36 | VCC | D3, G4, H8, J6 | 100 nF + 10 µF at the chip |
 | GND | 3, 8, 13, … | VSS | C5, F7, K3, K8 | |
 
 - I/O0–I/O7 must stay on 8 consecutive GPIOs, so that one read of the GPIO register gives the data byte.

@@ -249,8 +249,8 @@ typedef enum {
 ### 3.8 BUS_TEST sequence (chip-safe)
 
 The chip ignores everything while **CE# is high**, and its I/O pins are high-Z then (Table 3). So the whole test runs
-with CE# high, except one CE# pulse during which there are no strobes and CLE = ALE = 0. It is harmless even with a
-chip in the socket. One step = `step_us`.
+with CE# high, except one CE# pulse during which there are no strobes and CLE = ALE = 0. It is harmless even with the
+chip connected. One step = `step_us`.
 
 | # | Action (each held 1 step, then released for 1 step) |
 |---|---|
@@ -327,9 +327,9 @@ not needed for the 300 KB/s target.
 - `dump` refuses to start unless `READ_ID` returns exactly `01 DA 90 95 44`. It stores ID, timing and firmware
   version in a sidecar `FILE.meta.json`. `--resume` continues from `filesize // 2112` (a partial last page is
   truncated) and refuses if the sidecar parameters differ. It requests pages in chunks of 1024 (≈3 s) and re-checks
-  `READ_ID` between chunks, which catches the chip losing contact in the clamshell socket.
+  `READ_ID` between chunks, which catches a connection to the chip coming loose.
 - A page that still fails after the retry limit (default 5) **aborts the dump**. It is resumable, and nothing is ever
-  zero-filled. Such failures are systemic (wiring, socket), not data-dependent.
+  zero-filled. Such failures are systemic (wiring, connections), not data-dependent.
 - `status` decodes SR bits and **warns loudly if bit 7 = 1** (WP# not low).
 - `id` also decodes bytes 3–5 (Tables 16, 3.2, 3.3): SLC, 2 KB page, 128 KB block, 2 planes × 1 Gb, ×8, 25 ns.
 

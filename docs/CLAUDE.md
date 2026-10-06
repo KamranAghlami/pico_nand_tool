@@ -1,7 +1,7 @@
 # Pico NAND Tool — project instructions
 
 A Raspberry Pi Pico (RP2040) NAND tool. It bit-bangs a Spansion/SkyHigh **S34ML02G100BHI00** (2 Gb SLC, ×8,
-3.3 V, BGA63 in a clamshell socket) and streams raw pages (2048 data + 64 OOB) over USB to a Python host tool. Read
+3.3 V, BGA63, hand-wired dead-bug on perfboard) and streams raw pages (2048 data + 64 OOB) over USB to a Python host tool. Read
 side: M0–M6, done. **Write mode** (block erase + full-page program, armed at runtime) was added to the SPEC on
 2026-10-05; design record `docs/WRITE_PROPOSAL.md`, milestones W1–W7.
 

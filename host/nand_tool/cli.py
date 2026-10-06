@@ -410,7 +410,7 @@ def _badblocks_device(client: Client, args: argparse.Namespace) -> int:
         return 1
     idb = client.read_id()
     if idb != EXPECTED_ID:
-        print(f"error: READ_ID is {_hex(idb)}, expected {_hex(EXPECTED_ID)} (check the socket)", file=sys.stderr)
+        print(f"error: READ_ID is {_hex(idb)}, expected {_hex(EXPECTED_ID)} (check the wiring)", file=sys.stderr)
         return 1
     print(f"scanned  : chip blocks {first}..{first + count - 1} ({count} blocks); rule: datasheet §9.2, spare byte 0 "
           f"(offset {MARKER_OFFSET}) of pages 0, 1 and {PAGES_PER_BLOCK - 1} of each block must be FFh")
@@ -507,7 +507,7 @@ def _confirm(args: argparse.Namespace, phrase: str) -> bool:
 def _check_chip(client: Client) -> bool:
     idb = client.read_id()
     if idb != EXPECTED_ID:
-        print(f"error: READ_ID is {_hex(idb)}, expected {_hex(EXPECTED_ID)}: refusing to write (check the socket)",
+        print(f"error: READ_ID is {_hex(idb)}, expected {_hex(EXPECTED_ID)}: refusing to write (check the wiring)",
               file=sys.stderr)
         return False
     return True

@@ -149,7 +149,7 @@ def reconcile(
     if diffs:
         idb = client.read_id()
         if idb != EXPECTED_ID:
-            raise ReconcileError(f"READ_ID is {idb.hex(' ').upper()}: refusing to re-read (check the socket)")
+            raise ReconcileError(f"READ_ID is {idb.hex(' ').upper()}: refusing to re-read (check the wiring)")
 
     tmp = out.with_name(out.name + ".partial")
     shutil.copyfile(a, tmp)
