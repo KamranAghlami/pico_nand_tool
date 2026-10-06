@@ -1,4 +1,12 @@
-"""Post-processing of a raw image (no device needed): data/OOB split and the factory bad-block scan."""
+"""Post-processing of a raw image (no device needed): data/OOB split and the factory bad-block scan.
+
+- split: a raw image interleaves each page's 2048 data bytes with its 64 spare (OOB) bytes. Most analysis tools
+  (filesystem extractors, binwalk...) want the data alone, and ECC/metadata tools want the OOB alone, so split()
+  writes them to two files. Re-interleaving the two gives back the original image.
+- bad-block scan: the factory marks a bad block with a non-FFh value in spare byte 0 of page 0, 1 or 63 of the
+  block. A used chip complicates this: the previous system may have written its own data there, so the CLI warns when
+  the count looks implausible.
+"""
 
 from __future__ import annotations
 
@@ -75,6 +83,8 @@ def scan_bad_blocks(image: Path, start_page: int = 0) -> BadBlockScan:
     """Factory bad-block scan (§9.2, Fig. 55): a block is bad if the first spare byte of its 1st, 2nd or last page
     is not FFh. Only whole blocks in the image are scanned."""
     n = _pages(image)
+    # A dump need not start on a block boundary. Python's % is never negative, so (-start) % 64 is the number of pages
+    # up to the next boundary: start 0 -> 0, start 70 -> 58 (70 + 58 = 128 = block 2).
     lead = (-start_page) % PAGES_PER_BLOCK  # pages before the first block boundary
     blocks = max(0, (n - lead) // PAGES_PER_BLOCK)
     first_block = (start_page + lead) // PAGES_PER_BLOCK

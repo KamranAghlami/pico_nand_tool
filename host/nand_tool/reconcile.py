@@ -7,6 +7,13 @@ unanimous across A, B and the re-reads, with its vote counts.
 A page is only "corrected" if every bit's majority is clear: at least min_agree of the K reads. Otherwise it is
 flagged "unstable". It still gets the majority value (a page can't be left out or zero-filled), but the report and
 the exit status say so: unstable pages are flagged, not silently fixed.
+
+Worked example, K = 5 reads, min_agree = 4. For one bit of one byte:
+    reads 1 1 1 1 1   -> 1, unanimous                      (reported only if A or B had a 0)
+    reads 1 1 1 1 0   -> 1, 4 of 5 agree: "corrected"      (reported with votes_1 = 4, votes_0 = 1)
+    reads 1 1 1 0 0   -> 1, only 3 of 5 agree: "unstable"  (page flagged; exit status 1)
+A and B (the two original dumps) are not votes. They only decide which pages get re-read, and they appear in the
+report for comparison.
 """
 
 from __future__ import annotations
@@ -72,9 +79,11 @@ def vote_page(a: bytes, b: bytes, reads: list[bytes], min_agree: int) -> tuple[b
     bits: list[dict] = []
     weak = False
     for off in range(len(a)):
+        # Every source agrees on this byte (the common case): nothing to vote on. A set of size 1 = all equal.
         column = {a[off], b[off], *(r[off] for r in reads)}
         if len(column) == 1:
             continue
+        # Otherwise vote bit by bit: m selects one bit, and the byte is rebuilt from the 8 winning bits.
         byte = 0
         for bit in range(8):
             m = 1 << bit

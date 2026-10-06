@@ -1,3 +1,28 @@
+/*
+ * Bit-banged NAND bus: the only code that moves the NAND pins (contracts: nand_bus.h).
+ *
+ * Study notes
+ *  - "Bit-banging": the RP2040 has no NAND controller, so every bus edge is a store to a GPIO register followed by a
+ *    busy-wait. One page read is 2112 RE# pulses, i.e. a few thousand stores and spin loops.
+ *  - __not_in_flash_func(f) / __not_in_flash("nand") put the function in RAM. Normally code runs from the external
+ *    QSPI flash through a small cache, and a cache miss stalls the CPU while the flash is fetched. That would stretch
+ *    bus phases unpredictably (always safe here, since every delay is a minimum, but slow and jittery).
+ *  - gpio_set_mask / gpio_clr_mask write the SIO GPIO_OUT_SET / GPIO_OUT_CLR registers: every pin in the mask changes
+ *    with one store, at the same instant. gpio_put_masked(mask, value) sets the pins in `mask` to the bits of `value`
+ *    (also one store, via GPIO_OUT_XOR), which is how a byte and CLE/ALE go out together.
+ *  - gpio_set_dir_out_masked / gpio_set_dir_in_masked turn the output drivers on and off. The IO bus is shared: the
+ *    Pico drives it for command/address/data-in cycles and must let go (input) before the chip drives it (RE# low).
+ *    Two drivers fighting over a wire is a short circuit, hence the careful tWHR / tRHW / tCHZ waits.
+ *  - Write-mode sequence state machine (wseq below), advanced by the command latch and address functions:
+ *
+ *        NONE --80h--> PROG_ADDR --5th address--> PROG_DATA --data input--> PROG_LOADED --10h--> NONE
+ *        NONE --60h--> ERASE_ADDR --3rd address--> ERASE_READY --D0h--> NONE
+ *
+ *    Any other command, or an extra address cycle, drops back to NONE, so a confirm opcode (10h/D0h) or a data-input
+ *    cycle out of order finds the wrong state and panics before touching the bus.
+ *  - panic() is the SDK's, redirected by CMake (PICO_PANIC_FUNCTION) to nand_tool_panic() in fault.c: park the bus
+ *    with WP# low and halt. A panic here means a firmware bug; stopping is safer than carrying on.
+ */
 #include "nand_bus.h"
 
 #include <stddef.h>
@@ -10,6 +35,8 @@
 #include "pico/platform/panic.h"
 #include "pins.h"
 
+/* File-private state. Everything runs from the single main loop (no threads, no NAND work in interrupts), so plain
+ * statics need no locking. tm points at protocol.c's timing_t, so SET_TIMING takes effect on the next bus cycle. */
 static const timing_t *tm;
 
 /* Write mode state (layer 2 of the opcode gate, nand_cmd.h). The window is open, with WP# high, for exactly one
@@ -26,10 +53,15 @@ static enum {
 } wseq;
 static uint8_t waddr; /* address cycles since 80h / 60h */
 
-/* Every phase is a minimum (timing.h): interrupts or extra instructions only make it longer, which is always safe. */
+/* Every phase is a minimum (timing.h): interrupts or extra instructions only make it longer, which is always safe.
+ * busy_wait_at_least_cycles() (Pico SDK) spins the CPU for at least that many clk_sys cycles. __force_inline makes
+ * sure no function call (and no flash-resident code) sits in the middle of a bus phase. */
 static __force_inline void delay(uint32_t cycles) { busy_wait_at_least_cycles(cycles); }
 
-/* SysTick runs free at clk_sys (24 bit, wraps after 134 ms at 125 MHz, longer than any R/B# timeout). Down-counter. */
+/* SysTick runs free at clk_sys (24 bit, wraps after 134 ms at 125 MHz, longer than any R/B# timeout). Down-counter.
+ * It is used only to *measure* R/B# busy time (reported to the host). Because it counts down, elapsed = start - now;
+ * the & 0xFFFFFF makes that subtraction modulo 2^24, so it stays right across one wrap-around (e.g. start = 5,
+ * now = 0xFFFFFE after wrapping: (5 - 0xFFFFFE) & 0xFFFFFF = 7 cycles). */
 static __force_inline uint32_t cycles_now(void) { return systick_hw->cvr; }
 static __force_inline uint32_t cycles_since(uint32_t start) { return (start - cycles_now()) & 0xFFFFFFu; }
 
@@ -59,7 +91,8 @@ void nand_bus_init(void) {
     /* IO stays an input with the default pull-downs (defined level while the chip is deselected);
      * R/B# stays an input on its external pull-up. */
 
-    /* SysTick: processor clock, no interrupt, full 24-bit reload (R/B# busy-time measurement). */
+    /* SysTick: processor clock, no interrupt, full 24-bit reload (R/B# busy-time measurement). These are the ARM
+     * Cortex-M0+ core's own SysTick registers: rvr = reload value, cvr = current value, csr = control/status. */
     systick_hw->rvr = 0xFFFFFFu;
     systick_hw->cvr = 0;
     systick_hw->csr = 0x5; /* CLKSOURCE = processor clock, ENABLE */
@@ -90,7 +123,14 @@ void __not_in_flash_func(nand_bus_deselect)(void) {
 /* One latch cycle with CLE (command, Fig. 12) or ALE (address, Fig. 13) high. Never anything else: WE# with
  * CLE = ALE = 0 is data input, which exists only in the program-only data-input function below (SPEC "Hard safety
  * constraints"). Callers pass constants, so the check folds away. The bus may be driven here: the last read ended
- * with t_rhw (tRHW), the last deselect with t_ceh (tCHZ). */
+ * with t_rhw (tRHW), the last deselect with t_ceh (tCHZ).
+ *
+ *   CLE or ALE  ____/---------------------------------\____
+ *   IO          ----< v (driven by the Pico) >-------------   (stays driven afterwards)
+ *   WE#         -------------\__________/-------------
+ *                   | t_setup |   t_wp   |   t_wh    |
+ *                                       ^ chip latches v here, on WE# rising
+ */
 static __force_inline void latch_cycle(uint32_t ctrl, uint8_t v) {
     if (ctrl != MASK_CLE && ctrl != MASK_ALE)
         panic("NAND latch without CLE/ALE");
@@ -112,6 +152,8 @@ void nand_bus_cmd_latch_(nand_cmd_t op) {
     if (nand_cmd_is_write((unsigned)op)) {
         if (!write_window)
             panic("NAND write opcode 0x%02x outside the write window", (unsigned)op);
+        /* Setup opcodes (80h, 60h) may only start a fresh sequence; each confirm opcode needs its own setup to be
+         * complete: 10h after the data was loaded, D0h after the 3 erase address cycles. */
         bool in_order = (op == NAND_CMD_PROGRAM_1 || op == NAND_CMD_ERASE_1) ? wseq == WSEQ_NONE
                       : op == NAND_CMD_PROGRAM_2                           ? wseq == WSEQ_PROG_LOADED
                                                                            : wseq == WSEQ_ERASE_READY;
@@ -119,6 +161,7 @@ void nand_bus_cmd_latch_(nand_cmd_t op) {
             panic("NAND write opcode 0x%02x out of sequence", (unsigned)op);
     }
     latch_cycle(MASK_CLE, (uint8_t)op); /* Fig. 12 */
+    /* Advance the state machine (see the top of this file). Every read-side opcode resets it to NONE. */
     wseq = op == NAND_CMD_PROGRAM_1 ? WSEQ_PROG_ADDR : op == NAND_CMD_ERASE_1 ? WSEQ_ERASE_ADDR : WSEQ_NONE;
     waddr = 0;
 }
@@ -167,6 +210,9 @@ void __not_in_flash_func(nand_bus_data_in)(const uint8_t *buf, uint32_t n) {
 
 void __not_in_flash_func(nand_bus_wait_whr)(void) { delay(tm->t_whr); /* tWHR 60 covers tAR 10, tCLR 10 */ }
 
+/* Spin until R/B# reads high, or give up after timeout_us (the firmware never hangs on a dead or missing chip).
+ * Two clocks: time_us_32() (the SDK's 1 MHz timer) for the coarse timeout, SysTick for a cycle-exact busy time.
+ * time_us_32() - t0 is unsigned, so it stays correct even if the 32-bit microsecond counter wraps. */
 static bool __not_in_flash_func(poll_rb_high)(uint32_t timeout_us, uint32_t *busy_cycles) {
     uint32_t c0 = cycles_now();
     uint32_t t0 = time_us_32();
@@ -199,6 +245,13 @@ bool __not_in_flash_func(nand_bus_wait_ready_us)(uint32_t timeout_us, uint32_t *
 
 bool __not_in_flash_func(nand_bus_wait_rb_high)(uint32_t timeout_us) { return poll_rb_high(timeout_us, NULL); }
 
+/* Data-out cycles: the chip drives IO, the Pico samples it.
+ *
+ *   RE#   -----\__________/------\__________/------ ...
+ *               |  t_rea   | t_reh|
+ *                         ^ sample IO (gpio_get_all) just before RE# rises
+ *
+ * gpio_get_all() returns all 30 GPIO input levels in one word; >> PIN_IO0 and the (uint8_t) cast keep IO0..IO7. */
 void __not_in_flash_func(nand_bus_read)(uint8_t *buf, uint32_t n) {
     gpio_set_dir_in_masked(MASK_IO); /* before the first RE# fall (SPEC "Firmware requirements") */
     for (uint32_t i = 0; i < n; i++) {

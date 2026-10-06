@@ -1,5 +1,13 @@
 """`nandtool` command line: ping, timing, id, status, param, read, dump, compare, reconcile, split, badblocks, and
-write mode: erase, program, write, interlock-test (docs/SPEC.md). bus-test (M1) is not implemented: M1 was skipped."""
+write mode: erase, program, write, interlock-test (docs/SPEC.md). bus-test (M1) is not implemented: M1 was skipped.
+
+Structure: build_parser() declares every subcommand and binds it to a handler with set_defaults(func=cmd_xxx).
+main() parses argv, opens the device only if the command needs one (`needs_device`; compare and split work on files
+only), and calls handler(client, args). Each cmd_xxx() returns the exit status: 0 = pass, 1 = fail. The real work
+lives in the library modules (dump.py, write.py, ...); handlers mostly print. main() turns any NandToolError into a
+one-line `error: ...`, and takes a transport_factory argument so the tests can run the real CLI against
+tests/fake_device.py.
+"""
 
 from __future__ import annotations
 
@@ -700,7 +708,12 @@ def _expect(label: str, fn: Callable[[], object], status: Status) -> bool:
 
 def cmd_interlock_test(client: Client, args: argparse.Namespace) -> int:
     """W2: every erase/program here must be refused before it reaches the chip. Only a blank block is used, so even
-    a broken interlock loses no data."""
+    a broken interlock loses no data.
+
+    A good example of testing a safety mechanism on real hardware: each case tries one forbidden thing and expects
+    one specific refusal (ERR_NOT_ARMED / ERR_BAD_ARGS). Then two independent checks confirm nothing slipped through:
+    the status register still says WP# is low, and the block still reads all FFh. The all-00h test page would show
+    up there if it had been programmed."""
     b = args.block
     if not _check_chip(client):
         return 1
@@ -913,6 +926,7 @@ def main(argv: list[str] | None = None, transport_factory: Callable[[str | None]
     args = build_parser().parse_args(argv)
     transport = None
     try:
+        # needs_device is True (default), False, or a function of the args (badblocks needs one only with --device).
         needs_device = getattr(args, "needs_device", True)
         if not (needs_device(args) if callable(needs_device) else needs_device):
             return args.func(None, args)

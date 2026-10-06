@@ -1,4 +1,20 @@
-"""High-level device API on top of a Transport (framing, seq matching, retries, resync)."""
+"""High-level device API on top of a Transport (framing, seq matching, retries, resync).
+
+Study notes (docs/LEARNING_GUIDE.md §4-5):
+
+- Every request carries a sequence number (`seq`, 0..255, wrapping). The device echoes it, so a response is matched
+  to its request by (cmd, seq). Anything else that arrives (a late answer to a request we gave up on) is skipped.
+- `request()` is the workhorse for single-response commands: send, read one frame, retry on error. After a lost or
+  corrupt frame it first runs `resync()`: send ABORT (stops any stream still running on the device), then throw
+  input away until the line goes quiet. Only then is the stream of bytes known to be at a frame boundary again.
+- Retrying is only safe when repeating the request is harmless. Reads are. Erase and program are not: if their
+  answer is lost, they may already have run. `request(resend=False)` raises LostResponse instead, and write.py
+  re-does the whole block (erase, then program), which gives the right result whether or not the lost one ran.
+- `read_pages()` is a generator. It yields pages as the stream delivers them, so a 277 MB dump never sits in memory,
+  and it resumes the stream from the first page not yet yielded after a transport error.
+- `program_pages()` pipelines: it keeps two PROGRAM_PAGE requests in flight, so the USB link is busy sending the next
+  page while the device programs the current one (writes are limited by host->device USB bandwidth).
+"""
 
 from __future__ import annotations
 
@@ -130,7 +146,10 @@ class Client:
         return bytes(buf)
 
     def read_response(self, deadline: float) -> Response:
-        """Read exactly one frame. Raises FrameError (corrupt) or TransportError (timeout)."""
+        """Read exactly one frame. Raises FrameError (corrupt) or TransportError (timeout).
+
+        Two reads: the fixed 10-byte header first, because its `len` field is the only way to know how long the rest
+        (payload + 4-byte CRC) is."""
         hdr = self._read_exact(RESP_HDR_LEN, deadline)
         _, _, _, _, length = parse_response_header(hdr)
         rest = self._read_exact(length + CRC_LEN, deadline)
@@ -138,7 +157,10 @@ class Client:
 
     def resync(self) -> None:
         """Host recovery rule (docs/PROTOCOL.md): send ABORT (ends any running stream), then discard input until
-        the line has been quiet for quiet_s. Raises TransportError if it never goes quiet within resync_max_s."""
+        the line has been quiet for quiet_s. Raises TransportError if it never goes quiet within resync_max_s.
+
+        Why "quiet" and not "find the next magic byte": a 5Ah byte can occur anywhere inside page data, so there is no
+        reliable way to find a frame boundary in the middle of a stream. Silence is the one unambiguous boundary."""
         self.t.write(encode_request(Cmd.ABORT, self._next_seq()))
         self.t.reset_input()
         start = last = time.monotonic()
@@ -277,6 +299,9 @@ class Client:
         inflight: deque[tuple[int, int]] = deque()  # (seq, page), oldest first
         failure: DeviceError | None = None
         nxt = 0
+        # With depth 2 the timeline looks like this (S = send request, R = read its reply):
+        #   S(p0) S(p1) R(p0) S(p2) R(p1) S(p3) R(p2) ...
+        # so while the device programs p0 and answers, p1's 2116 bytes are already on their way over USB.
         try:
             while inflight or (failure is None and nxt < len(pages)):
                 while failure is None and nxt < len(pages) and len(inflight) < depth:
@@ -343,6 +368,9 @@ class Client:
         nxt = start  # first page not yet yielded
         failures = 0
         last_err: Exception | None = None
+        # True while the device may still be sending this stream's frames. If we leave with it set (error, or the
+        # caller stopped iterating, which raises GeneratorExit at the `yield`), the device must be told to stop, or
+        # the next request would be answered with ERR_BUSY and its reply buried among page frames.
         streaming = False
         try:
             while nxt < end:
@@ -381,7 +409,7 @@ class Client:
                         else:
                             raise FrameError(f"bad page frame: status {resp.status}, {len(resp.payload)} bytes")
                         nxt += 1
-                        failures = 0
+                        failures = 0  # progress was made: the retry budget is per stuck page, not per stream
                         yield resp.page, data
                 except (FrameError, TransportError) as e:
                     last_err = e

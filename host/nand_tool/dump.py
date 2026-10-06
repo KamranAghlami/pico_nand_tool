@@ -4,6 +4,20 @@ docs/PROPOSAL.md §5).
 The dump is the only copy of the data, so: an existing file is never overwritten without force, a page is never
 zero-filled or guessed (a page that keeps failing stops the dump, which can then be resumed), and everything written
 is flushed and fsynced chunk by chunk.
+
+Techniques worth noticing:
+
+- Crash safety. f.flush() moves Python's buffer to the OS; os.fsync() makes the OS put it on the disk. After each
+  chunk both happen, then the sidecar records how many pages are done. A crash or power cut at any moment leaves a
+  file whose first `pages_done` pages are good.
+- Atomic sidecar updates (_write_meta): write a temp file, then os.replace() it over the old one. On POSIX that
+  rename is atomic, so the sidecar is always either the old or the new version, never half-written JSON.
+- Resume: the file length says how far the dump got. A torn last page (crash in the middle of a write) is cut off
+  with truncate(), and reading restarts at the next whole page.
+- Chunks of 1024 pages: each chunk is one READ_PAGES stream. Between chunks the chip ID is read again, so a chip that
+  shifted in its socket is noticed within ~2 MB instead of producing hundreds of MB of garbage.
+- The sidecar's `sessions` list keeps one entry per run (firmware version, timing, retries...), so how the dump was
+  made stays on record next to it.
 """
 
 from __future__ import annotations
@@ -206,6 +220,8 @@ def dump(
                 if idb != EXPECTED_ID:
                     raise DumpError(f"READ_ID changed to {_hex(idb)} before page {first}: check the socket")
             pages: list[bytes | None] = [None] * n
+            # closing(): if anything goes wrong mid-chunk, the generator is closed, which aborts the device's stream
+            # (Client.read_pages' `finally`) instead of leaving it running.
             with contextlib.closing(client.read_pages(first, n)) as stream:
                 for p, data in stream:
                     pages[p - first] = data
@@ -231,7 +247,7 @@ def dump(
             save("running")
             if progress:
                 progress(Progress(done, count, session["pages_read"], time.monotonic() - t0))
-    except BaseException as e:
+    except BaseException as e:  # BaseException also catches Ctrl-C (KeyboardInterrupt): record it, then re-raise
         f.flush()
         os.fsync(f.fileno())
         f.close()

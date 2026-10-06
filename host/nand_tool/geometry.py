@@ -11,6 +11,11 @@ ID_ADDR = 0x00  # §3.16
 ONFI_ADDR = 0x20  # §3.18
 
 # Geometry (docs/SPEC.md "Target chip facts"; §1.5, Table 1)
+#   page  = 2048 data + 64 spare (OOB) = 2112 bytes   smallest unit to read or program
+#   block = 64 pages                                   smallest unit to erase
+#   chip  = 2048 blocks = 131072 pages = 276,824,064 bytes (256 MiB data + 8 MiB spare)
+# Pages are numbered 0..131071 across the whole chip; page p is in block p // 64, at position p % 64 in that block.
+# A raw dump is simply every page's 2112 bytes back to back, so page p starts at file offset p * 2112.
 PAGE_DATA = 2048
 PAGE_SPARE = 64
 PAGE_SIZE = PAGE_DATA + PAGE_SPARE

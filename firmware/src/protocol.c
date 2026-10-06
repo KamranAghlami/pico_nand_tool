@@ -1,3 +1,19 @@
+/*
+ * Request dispatch, response framing and the USB side of the protocol (docs/PROTOCOL.md).
+ *
+ * Study notes
+ *  - Flow: poll_input() reads USB bytes -> frame_parser_feed() -> a complete, CRC-valid request -> dispatch() ->
+ *    cmd_xxx() -> NAND work (nand_ops.c / nand_write.c) -> send_resp(). One request is handled completely before the
+ *    next byte is parsed, so responses go out in request order.
+ *  - Every cmd_xxx() validates arg_len and the argument values first and answers ERR_BAD_ARGS before doing anything.
+ *  - Big buffers are `static` (file-lifetime, not on the stack): the SDK gives the main stack only 2 KB, and one
+ *    proto_req_t alone is 2 KB.
+ *  - "Session": the host opening or closing the serial port toggles DTR. Each change bumps `session`, so code that
+ *    is busy sending can tell that the host it was talking to has gone, and stop (see usb_write_all()).
+ *  - Re-entrancy: during a READ_PAGES stream, cmd_read_pages() calls poll_input() itself, between pages, so it can
+ *    see an ABORT. That nested call uses a different handler (stream_on_req) and request buffer, but shares the
+ *    receive buffer and the parser, so bytes are still consumed strictly in arrival order.
+ */
 #include "protocol.h"
 
 #include <string.h>
@@ -17,7 +33,9 @@ static frame_parser_t parser;
 static uint32_t last_rx_ms;
 static timing_t timing;
 static uint8_t timing_mode;
-static volatile uint32_t session; /* bumped on every DTR change (tud_cdc_line_state_cb) */
+/* bumped on every DTR change (tud_cdc_line_state_cb). volatile marks it as changed outside the normal flow (by a
+ * callback that runs from inside tud_task(), which the send loops call), so every check reads it fresh. */
+static volatile uint32_t session;
 
 void protocol_init(void) {
     frame_parser_reset(&parser);
@@ -50,6 +68,8 @@ static bool usb_write_all(const uint8_t *p, uint32_t n, uint32_t my_session) {
     return true;
 }
 
+/* One response frame: header, payload, CRC. The CRC is computed incrementally over header + payload (crc32_update),
+ * so the payload never has to be copied next to the header into one buffer. */
 static bool send_resp(uint8_t cmd, uint8_t seq, uint8_t status, uint32_t page, const uint8_t *payload,
                       uint16_t len) {
     uint8_t hdr[PROTO_RESP_HDR_LEN];
@@ -246,6 +266,10 @@ static void stream_on_req(const proto_req_t *r) {
     send_status(r, PROTO_ST_ERR_BUSY);
 }
 
+/* The stream: one page frame per page, then an end frame (cmd | 0x80) with pages_sent / pages_failed.
+ * Between pages: service USB, feed the watchdog, look for an ABORT, check the host is still there. A page whose
+ * R/B# wait timed out is reported (status ERR_RB_TIMEOUT, no data) rather than skipped or filled in, and the stream
+ * carries on; the host decides whether to re-read it. */
 static void cmd_read_pages(const proto_req_t *r) {
     uint32_t start = r->arg_len == 8 ? get_le32(&r->args[0]) : 0;
     uint32_t count = r->arg_len == 8 ? get_le32(&r->args[4]) : 0;
@@ -298,6 +322,8 @@ static void cmd_abort(const proto_req_t *r) {
     send_status(r, r->arg_len ? PROTO_ST_ERR_BAD_ARGS : PROTO_ST_OK);
 }
 
+/* One handler per command code (protocol_defs.h PROTO_CMD_*). Each handler sends exactly one response, except
+ * READ_PAGES, which streams. */
 static void dispatch(const proto_req_t *r) {
     switch (r->cmd) {
     case PROTO_CMD_PING:

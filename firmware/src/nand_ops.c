@@ -1,3 +1,14 @@
+/*
+ * Read-side NAND transactions (contracts: nand_ops.h). Each function is one datasheet figure turned into calls:
+ *   nand_bus_select()            CE# low
+ *   NAND_CMD(op)                 command latch cycle (gated, nand_cmd.h)
+ *   nand_bus_addr(a)             address latch cycle
+ *   nand_bus_wait_whr()          short fixed wait before reading (no R/B# involved: ID, status)
+ *   nand_bus_wait_ready()        wait for the chip's internal operation (R/B#): reset, param page, page read
+ *   nand_bus_read(buf, n)        n data-out cycles
+ *   nand_bus_deselect()          CE# high
+ * Compare each function with the figure named in its comment; the calls follow it line by line.
+ */
 #include "nand_ops.h"
 
 #include <stddef.h>
@@ -68,7 +79,12 @@ uint8_t nand_read_page(uint32_t page, uint8_t *buf, uint32_t n) { return nand_re
 
 uint8_t nand_read_column(uint32_t page, uint16_t column, uint8_t *buf, uint32_t n) {
     /* §3.1, Fig. 6.1. Table 5 (2 Gb, x8): column = 2 cycles (CA0-CA11; 0 = start of page), row = 3 cycles, LSB first:
-     * PA0-PA5 page in block, PLA0 plane, BA0-BA9 block. Together that is just the page index 0..131071. */
+     * PA0-PA5 page in block, PLA0 plane, BA0-BA9 block. Together that is just the page index 0..131071.
+     *
+     * Worked example, page 4161 = block 65, page 1 in block (65 * 64 + 1), column 2048 (first spare byte):
+     *   column 2048 = 0x0800 -> cycles 00h, 08h
+     *   row    4161 = 0x01041 -> cycles 41h, 10h, 00h
+     * So the chip sees: 00h | 00 08 41 10 00 | 30h, then streams bytes from offset 2048 of that page. */
     nand_bus_select();
     NAND_CMD(NAND_CMD_READ_1);
     nand_bus_addr((uint8_t)column);        /* Col. Add. 1: CA0-CA7 */
@@ -77,6 +93,8 @@ uint8_t nand_read_column(uint32_t page, uint16_t column, uint8_t *buf, uint32_t 
     nand_bus_addr((uint8_t)(page >> 8));  /* Row Add. 2: BA1-BA8 */
     nand_bus_addr((uint8_t)(page >> 16)); /* Row Add. 3: BA9, rest low */
     NAND_CMD(NAND_CMD_READ_2);
+    /* Now the chip copies the whole page from the flash array into its internal page register (R/B# low for tR).
+     * The RE# pulses below then clock bytes out of that register, starting at `column`. */
     bool ready = nand_bus_wait_ready(NULL); /* tWB, tR (≤ 25 µs), tRR */
     if (ready)
         nand_bus_read(buf, n);

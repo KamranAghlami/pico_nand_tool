@@ -3,6 +3,13 @@
  * instruction overhead, which is always safe because every limit the host must meet is a minimum (datasheet Table 20).
  * Presets and floors: docs/PROTOCOL.md "timing_t"; derivation: docs/PROPOSAL.md §4.2.
  * Pure C (no SDK): unit-tested on the host.
+ *
+ * How to read this: the datasheet gives limits in nanoseconds (e.g. tWP >= 12 ns: WE# must stay low at least 12 ns).
+ * The firmware waits by spinning for a number of CPU cycles, so each field below is "cycles to wait in this phase".
+ * At 125 MHz one cycle is 8 ns, so t_wp = 4 is 32 ns. One phase of ours can serve several datasheet parameters, and
+ * one datasheet parameter can span several of our phases. timing_meets_floors() checks every such combination.
+ * The struct is a runtime value, not constants, so the host can slow the bus down (SET_TIMING) to probe a marginal
+ * chip or watch it on a logic analyzer, without reflashing.
  */
 #ifndef TIMING_H
 #define TIMING_H

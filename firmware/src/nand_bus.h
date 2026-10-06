@@ -1,4 +1,10 @@
-/* NAND bus primitives over RP2040 SIO (mask operations only). Datasheet sequences built on them: nand_ops.c. */
+/* NAND bus primitives over RP2040 SIO (mask operations only). Datasheet sequences built on them: nand_ops.c.
+ *
+ * Layering: this is the lowest layer, the only code that touches the NAND GPIOs. Each function is one kind of bus
+ * cycle (select, address latch, read n bytes, wait for R/B#...), with the timing_t delays built in. It knows
+ * nothing about pages or blocks; nand_ops.c / nand_write.c string these cycles together into datasheet commands,
+ * and protocol.c turns those into USB requests. Command latch cycles are not declared here: they go through the
+ * NAND_CMD() / NAND_WCMD() gate in nand_cmd.h. */
 #ifndef NAND_BUS_H
 #define NAND_BUS_H
 

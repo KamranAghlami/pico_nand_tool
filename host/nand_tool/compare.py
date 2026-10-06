@@ -1,4 +1,9 @@
-"""Page-by-page comparison of two raw dumps (docs/SPEC.md `compare`)."""
+"""Page-by-page comparison of two raw dumps (docs/SPEC.md `compare`).
+
+Two dumps of the same chip should be identical. Where they are not, the difference says something: a few single-bit
+differences on one page point to a weak cell; whole bytes or many pages point to wiring or timing. Files are read in
+1 MiB batches and compared batch-first (one fast bytes == bytes), and page by page only where a batch differs.
+"""
 
 from __future__ import annotations
 
@@ -28,6 +33,7 @@ class PageDiff:
 
     @property
     def bit_count(self) -> int:
+        # x ^ y has a 1 exactly where the two bytes differ; counting the 1s gives the number of flipped bits.
         return sum(bin(x ^ y).count("1") for x, y in zip(self.a, self.b))
 
 

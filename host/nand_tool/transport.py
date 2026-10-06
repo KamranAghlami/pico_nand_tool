@@ -1,6 +1,13 @@
 """Byte transport to the device: USB CDC via pyserial, with port auto-detection.
 
 The Transport interface is also implemented by tests/fake_device.py, so everything above it runs without hardware.
+
+`Transport` is a typing.Protocol: structural typing ("duck typing" a type checker can verify). Any class with
+matching write/read/reset_input/close methods counts as a Transport, without inheriting from it. That is what lets
+FakeDevice stand in for the serial port in the tests.
+
+USB CDC ignores the baud rate (bytes move at USB speed), so the 115200 below is a placeholder. The one baud rate with
+a meaning is 1200, which reboots the Pico into BOOTSEL (firmware protocol.c); the tool never sets it.
 """
 
 from __future__ import annotations

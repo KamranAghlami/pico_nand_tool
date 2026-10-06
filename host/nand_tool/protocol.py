@@ -2,6 +2,16 @@
 
 Canonical definition: docs/PROTOCOL.md. Mirrors firmware/src/protocol_defs.h; tests/test_protocol.py checks that
 the two agree.
+
+Frame layouts (all integers little-endian):
+
+    request   A5 | cmd | seq | arg_len u16 | args[arg_len]                       | crc32 u32
+    response  5A | cmd | seq | status | page u32 | len u16 | payload[len]          | crc32 u32
+
+The `struct` format strings below spell these out: "<" = little-endian with no padding, B = u8, H = u16, I = u32.
+So "<BBBBIH" is magic, cmd, seq, status (4 x u8), page (u32), len (u16): the 10-byte response header.
+
+This module does no I/O, which makes it easy to unit-test and to share between the real client and the fake device.
 """
 
 from __future__ import annotations
@@ -47,6 +57,8 @@ PROGRAM_TIMEOUT_US = 2000
 ERASE_TIMEOUT_US = 20000
 
 
+# IntEnum members are real ints (Cmd.PING == 1, so they pack straight into bytes), and still print by name in
+# messages (Cmd(1).name == "PING").
 class Cmd(IntEnum):
     PING = 0x01
     BUS_TEST = 0x02
@@ -119,7 +131,8 @@ assert _TIMING.size == TIMING_WIRE_LEN
 
 
 def crc32(data: bytes) -> int:
-    """IEEE 802.3 / zlib CRC-32."""
+    """IEEE 802.3 / zlib CRC-32 (the same function as firmware/src/crc32.c; check value crc32(b"123456789") is
+    0xCBF43926). The & 0xFFFFFFFF keeps the result an unsigned 32-bit value, as on the wire."""
     return binascii.crc32(data) & 0xFFFFFFFF
 
 
@@ -155,7 +168,10 @@ class Response:
 
 
 def parse_response_header(hdr: bytes) -> tuple[int, int, int, int, int]:
-    """Validate a 10-byte response header; return (cmd, seq, status, page, payload_len)."""
+    """Validate a 10-byte response header; return (cmd, seq, status, page, payload_len).
+
+    Split out from decode_response() because a reader needs the header first: only its `len` field says how many more
+    bytes make up the frame (Client.read_response)."""
     magic, cmd, seq, status, page, length = _RESP_HDR.unpack(hdr)
     if magic != MAGIC_RESP:
         raise FrameError(f"bad magic 0x{magic:02X}")
@@ -184,7 +200,10 @@ def _cycles(ns: int, clk_hz: int) -> int:
 
 @dataclass
 class Timing:
-    """timing_t: delays in clk_sys cycles (each a minimum), then the R/B# timeout. Field order is wire order."""
+    """timing_t: delays in clk_sys cycles (each a minimum), then the R/B# timeout. Field order is wire order.
+
+    What each field times is documented on the C struct (firmware/src/timing.h). Because field order is wire order,
+    pack()/unpack() can use dataclasses.astuple() and the "<13HI" struct (13 x u16, then u32)."""
 
     t_cs: int
     t_setup: int

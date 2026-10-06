@@ -8,6 +8,9 @@
 #endif
 #include "git_desc.h"
 
+/* Two-step stringify: FW_STR(FW_VERSION_MAJOR) first expands the macro to 0, then FW_STR_ turns it into "0".
+ * A single #x would give the literal text "FW_VERSION_MAJOR". Adjacent string literals are then joined by the
+ * compiler into one string, e.g. "pico-nand-tool 0.2.0 (5a00ac0)". */
 #define FW_STR_(x) #x
 #define FW_STR(x) FW_STR_(x)
 #define FW_VERSION_STRING                                                                              \

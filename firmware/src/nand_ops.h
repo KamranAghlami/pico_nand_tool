@@ -1,4 +1,7 @@
-/* Datasheet command sequences on top of nand_bus. Each returns a PROTO_ST_* status (protocol_defs.h). */
+/* Datasheet command sequences on top of nand_bus. Each returns a PROTO_ST_* status (protocol_defs.h).
+ * Every function here is a complete transaction: CE# low, commands/addresses, wait, data, CE# high. So the chip is
+ * always deselected between calls, and no call depends on what the previous one left behind. Read side only; the
+ * write sequences are in nand_write.c. */
 #ifndef NAND_OPS_H
 #define NAND_OPS_H
 

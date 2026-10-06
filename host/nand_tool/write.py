@@ -10,6 +10,25 @@ Rules (docs/CLAUDE.md "Hard safety rules"):
 - The target's bad-block markers are read before the first erase and kept in the sidecar (§9.2: an erase can destroy
   them). Blocks marked bad are never erased.
 - Nothing is marked, remapped or skipped silently: every block's outcome is reported.
+
+How a `write IMAGE` job is built (docs/LEARNING_GUIDE.md §8):
+
+    Image.open()   the file is whole blocks of 64 x 2112 bytes; its chip position comes from --start or its dump sidecar
+        │
+    build_plan()   read-only pass over the chip: bad-block markers of every target block, and (only-changed mode,
+        │          the default) the whole block, compared with the image. One Entry per image block:
+        │            write | same | image-bad | target-bad | conflict
+        │          --dry-run prints the plan and stops here: nothing has been erased yet.
+        ▼
+    run_plan()     for each "write" entry: record it as in progress in IMAGE.write.json, then write_block()
+                   (arm -> erase -> program pipelined -> disarm, + readback with --verify), then record it as done.
+
+Why erase and then program: NAND programming can only turn 1 bits into 0 bits, and only an erase turns them back to
+1 (a whole block at a time). So rewriting even one byte means erasing its block and programming all 64 pages again.
+Pages that are all FFh are skipped: an erased page already reads FFh.
+
+Bad-block maps: --map 1:1 puts image block N on chip block N, and refuses if a bad chip block would have to hold
+data. --map skip-bad slides the image past bad chip blocks, as many bootloaders and UBI expect.
 """
 
 from __future__ import annotations
@@ -138,6 +157,8 @@ def write_block(
     if len(pages) != PAGES_PER_BLOCK or any(len(p) != PAGE_SIZE for p in pages):
         raise ValueError("a block is 64 pages of 2112 bytes")
     first = block * PAGES_PER_BLOCK
+    # Re-doing the whole block is always safe: whatever a lost erase/program did or did not do, erasing again and
+    # programming the pages again ends in the same state. try/finally guarantees the disarm on every exit path.
     for attempt in range(1, BLOCK_ATTEMPTS + 1):
         try:
             client.arm_write(block, block, ARM_IDLE_S)
@@ -432,6 +453,8 @@ def run_plan(
     _save_sidecar(plan.image.path, meta)  # the target's markers are on disk before the first erase (§9.2)
     todo = plan.to_write
     try:
+        # The sidecar is written before and after each block. If the run dies in between, "in_progress" names the
+        # block whose state is unknown, and the next run's build_plan() always re-writes it.
         for k, e in enumerate(todo, 1):
             assert e.target_block is not None
             meta["in_progress"] = e.target_block

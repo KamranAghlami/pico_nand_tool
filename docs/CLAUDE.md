@@ -11,6 +11,8 @@ pages, WP# handling changes, skipping the arm) needs a SPEC change by the user f
 - Requirements: `docs/SPEC.md` (user-owned; do not edit without being asked).
 - Wire protocol (canonical): `docs/PROTOCOL.md`. Approved design records: `docs/PROPOSAL.md` (read side),
   `docs/WRITE_PROPOSAL.md` (write mode).
+- Study guide: `docs/LEARNING_GUIDE.md` (architecture, NAND primer, reading order). The source carries matching
+  explanatory comments; keep both in step when the architecture changes.
 - Datasheet: `docs/datasheet.pdf` (doc 002-00676 Rev \*W). **It is the source of truth.** If SPEC and datasheet
   conflict, stop and tell the user. Do not pick one silently.
 

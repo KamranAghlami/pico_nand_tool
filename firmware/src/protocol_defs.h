@@ -2,6 +2,10 @@
  * Wire protocol constants. Canonical definition: docs/PROTOCOL.md.
  * Mirrored by host/nand_tool/protocol.py; host/tests/test_protocol.py checks the two agree.
  * Keep every value a plain literal so that test can parse this file.
+ *
+ * Why two copies: the firmware (C) and the host (Python) must agree on every byte of the wire format, but cannot
+ * share a source file. Rather than generate one from the other, both are written by hand and a test reads this
+ * header with a regular expression and compares each PROTO_* value with its Python twin.
  */
 #ifndef PROTOCOL_DEFS_H
 #define PROTOCOL_DEFS_H

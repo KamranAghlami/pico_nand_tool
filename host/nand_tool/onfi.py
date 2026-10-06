@@ -1,4 +1,10 @@
-"""ONFI parameter page: CRC-16 and decoding (datasheet §3.19, Table 3.4)."""
+"""ONFI parameter page: CRC-16 and decoding (datasheet §3.19, Table 3.4).
+
+The parameter page is the chip describing itself in a standard (ONFI) layout: who made it, its geometry, timings,
+and a CRC-16 over bytes 0-253. The chip stores three identical copies so a reader can fall back to a good one. For
+this project it doubles as the best wiring test: 768 bytes with a known CRC go over all eight data lines, so one stuck,
+swapped or noisy line almost certainly breaks the CRC (`nandtool param`).
+"""
 
 from __future__ import annotations
 
@@ -14,7 +20,10 @@ CRC_LEN_COVERED = 254  # bytes 0-253; the CRC itself is stored little-endian in 
 
 def onfi_crc16(data: bytes, crc: int = CRC_BASE) -> int:
     """ONFI CRC-16: poly 0x8005, MSB first, no final XOR. Port of onfi_crc16() in Linux
-    drivers/mtd/nand/raw/nand_onfi.c."""
+    drivers/mtd/nand/raw/nand_onfi.c.
+
+    The bit-at-a-time form of a CRC: for each input bit, shift the 16-bit register left, and if the bit that fell out
+    was 1, XOR in the polynomial. (firmware/src/crc32.c shows the faster table-driven form of the same idea.)"""
     for byte in data:
         crc ^= byte << 8
         for _ in range(8):

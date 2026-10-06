@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.13)
 
+# Pico SDK build: pico_sdk_import.cmake finds the SDK (PICO_SDK_PATH), pico_sdk_init() sets up the cross toolchain
+# (arm-none-eabi-gcc for the Cortex-M0+), and pico_add_extra_outputs() turns the ELF into pico_nand_tool.uf2, the
+# file you drag onto the RPI-RP2 drive. Only the pure modules (crc32, frame, timing) are also built for the PC, by
+# firmware/tests/Makefile.
+
 # Target board: Raspberry Pi Pico (RP2040).
 set(PICO_BOARD pico CACHE STRING "Board type")
 

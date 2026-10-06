@@ -14,6 +14,13 @@
  *      check_gate_calls.sh fails if nand_bus_cmd_latch_ is named outside this header and its definition, or
  *      NAND_WCMD / the data-input cycle / the write window are used outside nand_write.c.
  * No SDK includes, so the gate test can compile this header on the host.
+ *
+ * How the compile-time gate works: _Static_assert(expr, msg) needs an integer constant expression. NAND_CMD(0x30)
+ * expands to _Static_assert(0x30 == 0x00 || 0x30 == 0x30 || ..., "...") which the compiler evaluates while compiling.
+ * A forbidden constant makes it false (build error with that message). A variable makes it non-constant (also a build
+ * error), so an opcode can never be computed at run time and slip through. The do { ... } while (0) wrapper makes
+ * the macro one statement (safe after an `if` without braces) and gives the _Static_assert a block to live in.
+ * firmware/tests/forbidden_opcode.c proves both failure modes in CI.
  */
 #ifndef NAND_CMD_H
 #define NAND_CMD_H

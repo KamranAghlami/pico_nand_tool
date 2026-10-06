@@ -7,7 +7,15 @@
 void frame_parser_reset(frame_parser_t *p) { p->len = 0; }
 
 /* Drop buf[0] (a false magic) and rescan the remaining bytes. They are fewer than a full header, so no frame can
- * complete here. */
+ * complete here.
+ *
+ * Why rescan: a stray A5 byte (line noise, the tail of an earlier corrupted request) looks like a frame start. If
+ * the parser just threw away all 5 buffered bytes, it could throw away the real A5 of the next request with them.
+ * Re-feeding the bytes after the false magic means a real frame start among them is found again. Example: a stray
+ * A5, then the real request A5 0D 07 44 08 ... (PROGRAM_PAGE, seq 7, arg_len 0x0844 = 2116). The first header seen
+ * is A5 A5 0D 07 44, i.e. arg_len 0x4407 > 2116, so that first A5 was false: drop it and re-feed A5 0D 07 44, and
+ * the real frame carries on as if nothing happened. If a false header happens to give a plausible arg_len, the CRC
+ * catches it instead (ERR_CRC) and the host retries. */
 static void frame_parser_resync(frame_parser_t *p) {
     uint8_t rest[PROTO_REQ_HDR_LEN];
     uint16_t n = (uint16_t)(p->len - 1);
@@ -17,6 +25,11 @@ static void frame_parser_resync(frame_parser_t *p) {
         (void)frame_parser_feed(p, rest[i], NULL); /* out is only written when a frame completes */
 }
 
+/* The parser's whole state is p->len, the number of bytes buffered:
+ *   0                    hunting for the magic byte; anything else is skipped
+ *   1 .. header-1        collecting the 5-byte header
+ *   header .. full-1     arg_len is known, so the total frame length is known; collecting args + CRC
+ *   full                 check the CRC, hand out the request, back to 0 */
 frame_result_t frame_parser_feed(frame_parser_t *p, uint8_t byte, proto_req_t *out) {
     if (p->len == 0 && byte != PROTO_MAGIC_REQ)
         return FRAME_NEED_MORE;

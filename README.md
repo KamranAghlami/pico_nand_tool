@@ -9,6 +9,7 @@ and reads every written block back when asked (`--verify`).
 - Wire protocol: [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
 - Design records (approved): [`docs/PROPOSAL.md`](docs/PROPOSAL.md) (read side),
   [`docs/WRITE_PROPOSAL.md`](docs/WRITE_PROPOSAL.md) (write mode)
+- How it works (architecture, NAND primer, reading order): [`docs/LEARNING_GUIDE.md`](docs/LEARNING_GUIDE.md)
 
 Reading uses only Reset, Read ID, Read Parameter Page, Page Read and Read Status. Write mode adds Block Erase
 (`60h`/`D0h`) and full-page Page Program (`80h`/`10h`) and nothing else. It is off at boot: the host arms it for one

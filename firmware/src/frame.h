@@ -1,4 +1,11 @@
-/* Request parsing and response header encoding (docs/PROTOCOL.md). Pure C, no SDK: unit-tested on the host. */
+/* Request parsing and response header encoding (docs/PROTOCOL.md). Pure C, no SDK: unit-tested on the host.
+ *
+ * Request frame:   A5 | cmd | seq | arg_len (u16 LE) | args[arg_len] | crc32 (u32 LE, over everything before it)
+ * Response header: 5A | cmd | seq | status | page (u32 LE) | len (u16 LE)   then payload[len], then crc32
+ *
+ * USB delivers a byte stream, not messages: one USB packet may hold half a request, or the end of one and the start
+ * of the next. So the parser is fed one byte at a time and keeps what it has so far in frame_parser_t; it reports
+ * a request only once every byte, CRC included, has arrived. */
 #ifndef FRAME_H
 #define FRAME_H
 
@@ -42,6 +49,9 @@ void frame_resp_header(uint8_t hdr[PROTO_RESP_HDR_LEN], uint8_t cmd, uint8_t seq
 unsigned frame_req_encode(uint8_t out[FRAME_REQ_MAX], uint8_t cmd, uint8_t seq, const uint8_t *args,
                           uint16_t arg_len);
 
+/* Little-endian (least significant byte first) helpers. Built from shifts, not by casting a pointer to uint32_t *:
+ * that would depend on the CPU's byte order and could fault on an unaligned address (the Cortex-M0+ traps on
+ * unaligned 32-bit loads). */
 static inline void put_le16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)v;
     p[1] = (uint8_t)(v >> 8);

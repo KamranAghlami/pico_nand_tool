@@ -3,6 +3,22 @@
  * Ball numbers: datasheet Fig. 3 (63-BGA, x8).
  * WP# (ball C3) is on GP13 with a 10k external pull-down. Firmware only ever drives it LOW (= write protected, §2.5),
  * never high. tests/check_wp.sh fails the build on any other use than the drive-low init in nand_bus.c.
+ *
+ * What the signals do (docs/LEARNING_GUIDE.md §2.3). '#' = active low: the signal is "on" at 0 V.
+ *   IO0-IO7  8-bit data bus, both directions. The Pico drives it for command/address/data-in cycles; the chip
+ *            drives it while RE# is low (data out).
+ *   CLE      high: the byte latched on WE#'s rising edge is a command opcode.
+ *   ALE      high: the byte latched on WE#'s rising edge is an address byte. (Both low: data in.)
+ *   WE#      write strobe. The chip captures IO on its rising edge.
+ *   RE#      read strobe. Each low pulse makes the chip put the next byte on IO.
+ *   CE#      chip enable. High: the chip ignores every other line, so it is the "safe" idle state.
+ *   WP#      write protect. Low: the chip refuses program/erase. Raised only for one armed write operation.
+ *   R/B#     ready/busy, driven by the chip (open drain, so it needs the pull-up). Low while the chip is busy.
+ *
+ * Why masks: the RP2040's SIO block has single-cycle GPIO_OUT_SET / _CLR / _XOR registers, each taking a 32-bit
+ * mask of pins. gpio_set_mask(MASK_CE | MASK_WE) raises both pins with one store, at the same instant. The firmware
+ * only ever uses these masks, never per-pin loops, which keeps every bus phase short and predictable.
+ * IO0..IO7 on consecutive GPIOs means one read of GPIO_IN, shifted by PIN_IO0, is the data byte.
  */
 #ifndef PINS_H
 #define PINS_H
@@ -30,6 +46,7 @@
 #define MASK_CTRL_IDLE_LOW (MASK_CLE | MASK_ALE)
 #define MASK_ALL_NAND (MASK_IO | MASK_CTRL_IDLE_HIGH | MASK_CTRL_IDLE_LOW | MASK_RB)
 
+/* _Static_assert is checked by the compiler, so a bad pin map can never be built at all (zero run-time cost). */
 _Static_assert(PIN_IO0 + 7 <= 29, "IO0..IO7 must be 8 contiguous GPIOs");
 _Static_assert((MASK_IO & (MASK_CTRL_IDLE_HIGH | MASK_CTRL_IDLE_LOW | MASK_RB)) == 0, "pin map overlap");
 _Static_assert((MASK_CTRL_IDLE_HIGH & (MASK_CTRL_IDLE_LOW | MASK_RB)) == 0, "pin map overlap");

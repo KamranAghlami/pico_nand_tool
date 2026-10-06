@@ -1,4 +1,10 @@
-/* USB descriptors: single CDC-ACM interface. Adapted from pico-sdk pico_stdio_usb/stdio_usb_descriptors.c. */
+/* USB descriptors: single CDC-ACM interface. Adapted from pico-sdk pico_stdio_usb/stdio_usb_descriptors.c.
+ *
+ * Background: when a USB device is plugged in, the host asks it to describe itself (enumeration). These tables are
+ * the answers: the device descriptor (VID:PID, strings), the configuration descriptor (one CDC-ACM "virtual serial
+ * port" = 2 interfaces, a control/notification endpoint and a bulk OUT + bulk IN pair for the data), and the string
+ * descriptors. TinyUSB calls the tud_descriptor_*_cb() functions below to fetch them. The product string
+ * "Pico NAND Tool" is what the host tool's auto-detection looks for (host/nand_tool/transport.py). */
 #include "pico/unique_id.h"
 #include "tusb.h"
 
@@ -76,6 +82,8 @@ const uint16_t *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
         for (len = 0; len < 31 && s[len]; len++)
             buf[1 + len] = (uint8_t)s[len];
     }
+    /* USB strings are UTF-16LE; the ASCII chars above were widened to 16 bits. Word 0 = descriptor type and the
+     * total length in bytes (2-byte header + 2 bytes per char). */
     buf[0] = (uint16_t)((TUSB_DESC_STRING << 8) | (2 * len + 2));
     return buf;
 }

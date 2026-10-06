@@ -1,3 +1,17 @@
+/*
+ * Write mode: the arm state, Block Erase and Page Program (contracts: nand_write.h).
+ *
+ * Study notes
+ *  - This is the only file allowed to use the write path (NAND_WCMD, nand_bus_write_window_open/close,
+ *    nand_bus_data_in); tests/check_gate_calls.sh enforces it. So everything that can change the chip is in here.
+ *  - Two independent permissions must both be given for a write to reach the chip:
+ *      1. the arm (software): the host sent ARM_WRITE with the magic token for a block range, recently enough;
+ *      2. the write window (hardware): WP# high, opened here for exactly one erase or program and closed after it.
+ *  - Order of checks in each operation: arguments -> armed for this block -> (erase) bad-block markers -> bus.
+ *    Every refusal happens before the bus is touched.
+ *  - Program and erase are not "fire and forget": afterwards the status register says whether they worked
+ *    (finish() below). A failed or timed-out operation disarms, so the host has to arm again deliberately.
+ */
 #include "nand_write.h"
 
 #include "nand_bus.h"
@@ -28,6 +42,8 @@ uint8_t nand_write_arm(uint32_t token, uint16_t first_block, uint16_t last_block
 
 void nand_write_disarm(void) { arm.armed = false; }
 
+/* The idle timeout is checked lazily, here, at the moment of use: there is no timer interrupt that disarms. That is
+ * enough, since nothing can be erased or programmed without passing through this check first. */
 static bool armed_for(uint16_t block) {
     if (arm.armed && time_us_64() - arm.last_use_us > arm.idle_us)
         arm.armed = false; /* idle timeout */
@@ -52,7 +68,8 @@ static uint8_t finish(uint32_t timeout_us, uint8_t *sr, uint32_t *busy_cycles) {
         (void)nand_reset(NULL); /* waits out tRST (≤ 500 µs from erase busy, Table 20), then FFh */
         return PROTO_ST_ERR_RB_TIMEOUT;
     }
-    /* Table 13: bit 7 = 0 means WP# was low, so the chip ignored the command (§2.5); bit 6 = ready; bit 0 = fail. */
+    /* Table 13: bit 7 = 0 means WP# was low, so the chip ignored the command (§2.5); bit 6 = ready; bit 0 = fail.
+     * (*sr & 0x41) != 0x40 means "not (ready and passed)": a healthy result is E0h (WP# high, ready, idle, pass). */
     uint8_t st = !(*sr & 0x80)          ? PROTO_ST_ERR_WP_STUCK
                : (*sr & 0x41) != 0x40   ? PROTO_ST_ERR_OP_FAILED
                                         : PROTO_ST_OK;
@@ -111,7 +128,9 @@ uint8_t nand_program_page(uint32_t page, const uint8_t *data, uint8_t *sr, uint3
     nand_bus_addr((uint8_t)page);         /* Row Add. 1: PA0-PA5, PLA0, BA0 */
     nand_bus_addr((uint8_t)(page >> 8));  /* Row Add. 2: BA1-BA8 */
     nand_bus_addr((uint8_t)(page >> 16)); /* Row Add. 3: BA9 */
-    nand_bus_data_in(data, PROTO_PAGE_LEN); /* tADL, then 2112 data input cycles */
+    nand_bus_data_in(data, PROTO_PAGE_LEN); /* tADL, then 2112 data input cycles into the chip's page register */
+    /* 10h starts the actual programming: the chip copies the page register into the array (tPROG, ~200 µs). It can
+     * only clear bits (1 -> 0), which is why the host only programs pages it has just erased. */
     NAND_WCMD(NAND_CMD_PROGRAM_2);
     return finish(PROTO_PROGRAM_TIMEOUT_US, sr, busy_cycles);
 }
