@@ -70,7 +70,7 @@ metadata:
   host erase/program/write/interlock-test, badblocks --device/--blank. make check, SDK build and 188 host tests
   pass. Nothing run on hardware yet. Next: W2 (flash 0.2.0, read regressions, `interlock-test` on a block that is
   blank in final.bin, `badblocks --device`, `write final.bin --dry-run` should find nothing to write).
-- 2026-10-05: **W2 APPROVED by the user** (WSL machine, firmware 0.2.0 (9c94a42), protocol v2). Before flashing, the old
+- 2026-10-05: **W2 APPROVED by the user** (WSL machine, firmware 0.2.0 (040af54), protocol v2). Before flashing, the old
   firmware stopped answering (`vhci_hcd ... urb->status -104`) and the 1200-baud reboot did nothing. The cause was a
   bad USB cable, not firmware or usbip; the user swapped it and put the Pico in BOOTSEL by hand. Results: `status --reset` 60h; `id --repeat 1000 --onfi` 1000/1000 + ONFI; `param` 3 copies
   CRC `3B C5`, PASS; page 0 x100 PASS; `badblocks --device` 0 bad (same as final.bin); `interlock-test --block 80`
@@ -80,7 +80,7 @@ metadata:
 - 2026-10-05: **W3 APPROVED by the user.** First real erase, block 80 (blank in final.bin): `erase --block 80` → SR
   E0h (bit 7 = 1, so WP# rose), busy 1144 us (below the 3.5 ms typ; tBERS has no minimum, and the block was already
   blank), verified all FFh; `status` 60h afterwards; `read --block 80 --repeat 10` 64/64 FFh, stable;
-  `write final.bin --dry-run` 2048/2048 identical. `nandtool erase` now prints SR + busy (210275e). In auto mode the
+  `write final.bin --dry-run` 2048/2048 identical. `nandtool erase` now prints SR + busy (61fd1d0). In auto mode the
   permission classifier refuses `nandtool erase` even with an allow rule; the user switched to the default mode.
 - 2026-10-05: **W4 PASSED** (run in the session; the user had said "when passed, commit & push, then onto the next
   milestone"). Block 80, 64 pattern pages x 2112 B incl. OOB: 00, FF, 55, AA, 55/AA, AA/55, walking 1/0 (8 each),
