@@ -105,11 +105,12 @@ python3 -m venv .venv && .venv/bin/pip install -e 'host[test]'
 .venv/bin/nandtool ping
 ```
 
-CI (`.github/workflows/ci.yml`) runs `make -C firmware/tests check`, builds the `.uf2` (uploaded as an artifact),
-and runs the host tests on the latest stable Python. A `vX.Y.Z` tag builds the firmware with `-DFW_VERSION=X.Y.Z`
-and the host with `__version__ = "X.Y.Z"` (`nand_tool/__init__.py`, the host version's only source), then publishes
-a GitHub release with `pico_nand_tool-vX.Y.Z.uf2` and the host wheel. Keep both defaults (CMakeLists `FW_VERSION`,
-`__version__`) equal to the latest tag.
+CI (`.github/workflows/ci.yml`) runs `make -C firmware/tests check`, builds the `.uf2` and runs the host tests on
+the latest stable Python. A `vX.Y.Z` tag builds the firmware with `-DFW_VERSION=X.Y.Z` and the host with
+`__version__ = "X.Y.Z"` (`nand_tool/__init__.py`, the host version's only source), then publishes a GitHub release
+with `pico_nand_tool-vX.Y.Z.uf2` and the host wheel. Regular runs upload no artifacts; tag runs hand the `.uf2` and
+wheel to the release job (kept 1 day). Keep both defaults (CMakeLists `FW_VERSION`, `__version__`) equal to the
+latest tag.
 
 ## Memory
 

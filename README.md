@@ -62,22 +62,70 @@ The pin map lives in [`firmware/src/pins.h`](firmware/src/pins.h). Change it the
   before the firmware starts, and the firmware drives GP13 low at boot. With WP# low, the chip's status register
   reads `60h` after a reset. `E0h` would mean WP# is not really low: stop and check the pull-down and wiring.
 
-## Build the firmware
+## Install
 
-You can download a prebuilt `.uf2` from a release or from CI, or build it yourself.
+Each [release](https://github.com/KamranAghlami/pico_nand_tool/releases/latest) has two files:
 
-**Download a release:** every `vX.Y.Z` tag has a [GitHub release](https://github.com/KamranAghlami/pico_nand_tool/releases)
-with the firmware, `pico_nand_tool-vX.Y.Z.uf2`, and the host tool as a wheel, `pico_nand_tool-X.Y.Z-py3-none-any.whl`
-(see [Install the host tool](#install-the-host-tool)). CI builds both with the version taken from the tag.
+- `pico_nand_tool-vX.Y.Z.uf2`: the firmware for the Pico.
+- `pico_nand_tool-X.Y.Z-py3-none-any.whl`: the host tool, `nandtool` (pure Python, any OS).
 
-**Download from CI** (needs the [GitHub CLI](https://cli.github.com/)):
+Use the firmware and host tool from the same release. To build them yourself instead, see
+[Build from source](#build-from-source).
+
+### Flash the firmware
+
+1. Download `pico_nand_tool-vX.Y.Z.uf2` from the [latest release](https://github.com/KamranAghlami/pico_nand_tool/releases/latest).
+2. Hold **BOOTSEL** while plugging the Pico into USB. A drive called `RPI-RP2` appears.
+3. Copy the `.uf2` onto it. The Pico reboots into the firmware, and its LED lights once USB is enumerated.
+
+   ```sh
+   cp pico_nand_tool-vX.Y.Z.uf2 /media/$USER/RPI-RP2/      # Linux (mount point varies by desktop)
+   cp pico_nand_tool-vX.Y.Z.uf2 /Volumes/RPI-RP2/          # macOS
+   ```
+
+To reflash later without pressing BOOTSEL, set the serial port to 1200 baud. The firmware then reboots into BOOTSEL
+and the `RPI-RP2` drive appears again:
 
 ```sh
-gh run list -R KamranAghlami/pico_nand_tool -L 5                  # pick the latest successful run ID
-gh run download <run-id> -R KamranAghlami/pico_nand_tool -n pico-nand-tool-uf2 -D /tmp/fw
+stty -F /dev/ttyACM0 1200              # Linux
+stty -f /dev/cu.usbmodem* 1200         # macOS (BSD stty uses -f)
 ```
 
-**Build locally:** you need an ARM GCC toolchain, CMake, Ninja, Git and Pico SDK **2.3.1**.
+Serial port names: on Linux `/dev/ttyACM0` (or `ttyACM1`, …); on macOS `/dev/cu.usbmodem<number>`. Use the `cu.`
+device, not `tty.`.
+
+Check that it enumerated: on Linux, `lsusb -d 2e8a:000a` should list the device; on macOS, run
+`ls /dev/cu.usbmodem*`. Either way, `nandtool ping` should answer (see [Usage](#usage)).
+
+### Install the host tool
+
+You need Python 3.10 or newer (on macOS: `brew install python`). Install the tool into a virtual environment,
+never into the system Python. pip can install the wheel straight from the release:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install https://github.com/KamranAghlami/pico_nand_tool/releases/download/vX.Y.Z/pico_nand_tool-X.Y.Z-py3-none-any.whl
+```
+
+(or download the `.whl` first and `pip install` the file). This installs the `nandtool` command into `.venv/bin/`.
+Run `source .venv/bin/activate` to call it as just `nandtool`.
+
+- **Linux:** if opening the port fails with "permission denied", add yourself to the `dialout` group
+  (`sudo usermod -aG dialout $USER`), then log out and back in.
+- **WSL2:** attach the Pico from Windows with [usbipd-win](https://github.com/dorssel/usbipd-win). From an admin
+  PowerShell, run `usbipd list`, then `usbipd bind --busid <id>` once, then `usbipd attach --wsl --busid <id>`. It then
+  appears as `/dev/ttyACM0`. Attach again after every reflash or replug.
+- **macOS:** no extra setup. Ports need no special permissions, and auto-detect finds the Pico by its product name.
+
+## Build from source
+
+```sh
+git clone https://github.com/KamranAghlami/pico_nand_tool.git && cd pico_nand_tool
+```
+
+### Firmware
+
+You need an ARM GCC toolchain, CMake, Ninja, Git and Pico SDK **2.3.1**.
 
 Linux (Ubuntu/Debian):
 
@@ -104,54 +152,19 @@ cmake -S firmware -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-The result is `build/pico_nand_tool.uf2`. On the first build the SDK also fetches and builds `picotool`.
+The result is `build/pico_nand_tool.uf2`; flash it as in [Flash the firmware](#flash-the-firmware). On the first build
+the SDK also fetches and builds `picotool`.
 
-## Flash the Pico
+### Host tool
 
-1. Hold **BOOTSEL** while plugging the Pico into USB. A drive called `RPI-RP2` appears.
-2. Copy `pico_nand_tool.uf2` onto it. The Pico reboots into the firmware, and its LED lights once USB is enumerated.
-
-   ```sh
-   cp build/pico_nand_tool.uf2 /media/$USER/RPI-RP2/      # Linux (mount point varies by desktop)
-   cp build/pico_nand_tool.uf2 /Volumes/RPI-RP2/          # macOS
-   ```
-
-To reflash later without pressing BOOTSEL, set the serial port to 1200 baud. The firmware then reboots into BOOTSEL
-and the `RPI-RP2` drive appears again:
-
-```sh
-stty -F /dev/ttyACM0 1200              # Linux
-stty -f /dev/cu.usbmodem* 1200         # macOS (BSD stty uses -f)
-```
-
-Serial port names: on Linux `/dev/ttyACM0` (or `ttyACM1`, …); on macOS `/dev/cu.usbmodem<number>`. Use the `cu.`
-device, not `tty.`.
-
-Check that it enumerated: on Linux, `lsusb -d 2e8a:000a` should list the device; on macOS, run
-`ls /dev/cu.usbmodem*`. Either way, `nandtool ping` should answer (see [Usage](#usage)).
-
-## Install the host tool
-
-You need Python 3.10 or newer (on macOS: `brew install python`). Install the tool into a virtual environment,
-never into the system Python:
+Install the package from the checkout, editable, into a virtual environment:
 
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -e host            # or -e 'host[test]' to also get pytest
 ```
 
-Or, without the source, install a release's wheel the same way:
-`.venv/bin/pip install pico_nand_tool-X.Y.Z-py3-none-any.whl`.
-
-This installs the `nandtool` command into `.venv/bin/`. Run `source .venv/bin/activate` to call it as just
-`nandtool`.
-
-- **Linux:** if opening the port fails with "permission denied", add yourself to the `dialout` group
-  (`sudo usermod -aG dialout $USER`), then log out and back in.
-- **WSL2:** attach the Pico from Windows with [usbipd-win](https://github.com/dorssel/usbipd-win). From an admin
-  PowerShell, run `usbipd list`, then `usbipd bind --busid <id>` once, then `usbipd attach --wsl --busid <id>`. It then
-  appears as `/dev/ttyACM0`. Attach again after every reflash or replug.
-- **macOS:** no extra setup. Ports need no special permissions, and auto-detect finds the Pico by its product name.
+The same OS notes as in [Install the host tool](#install-the-host-tool) apply.
 
 ## Usage
 
@@ -254,6 +267,10 @@ make -C firmware/tests check        # firmware unit tests + opcode, write-path a
 .venv/bin/pytest host/tests -q      # host tool against a simulated device (needs host[test])
 ```
 
-CI runs both on every push, builds the `.uf2`, and uploads it as the `pico-nand-tool-uf2` artifact. Pushing a tag
-`vX.Y.Z` also builds the firmware and the host tool as version X.Y.Z and, once everything passes, publishes a GitHub
-release with `pico_nand_tool-vX.Y.Z.uf2` and the host wheel.
+CI runs both on every push and pull request, and builds the firmware.
+
+## Releases
+
+Pushing a tag `vX.Y.Z` makes CI build the firmware and the host tool as version X.Y.Z (the version comes from the tag)
+and, once the build and all tests pass, publish a GitHub release with `pico_nand_tool-vX.Y.Z.uf2` and
+`pico_nand_tool-X.Y.Z-py3-none-any.whl`.

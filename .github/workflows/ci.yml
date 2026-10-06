@@ -79,15 +79,15 @@ jobs:
           ls -l build/*.uf2
           test -n "$(ls build/*.uf2 2>/dev/null)"
 
-      - name: Upload firmware
+      # Tag runs only: hand the .uf2 to the release job. Regular runs upload nothing (releases are the downloads).
+      - name: Hand the .uf2 to the release job
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v7
         with:
-          name: pico-nand-tool-uf2
-          path: |
-            build/*.uf2
-            build/*.elf
-            build/*.map
+          name: release-uf2
+          path: build/pico_nand_tool.uf2
           if-no-files-found: error
+          retention-days: 1
 
   host:
     name: Host tool tests (latest Python)
@@ -131,13 +131,14 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: .venv/bin/pip wheel --no-deps -w dist ./host
 
-      - name: Upload wheel
+      - name: Hand the wheel to the release job
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v7
         with:
-          name: pico-nand-tool-wheel
+          name: release-wheel
           path: dist/*.whl
           if-no-files-found: error
+          retention-days: 1
 
   # Tag vX.Y.Z: publish a GitHub release with the firmware .uf2 and the host tool wheel, once the firmware build and
   # the host tests have passed.
@@ -152,12 +153,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: pico-nand-tool-uf2
+          name: release-uf2
           path: dist
 
       - uses: actions/download-artifact@v8
         with:
-          name: pico-nand-tool-wheel
+          name: release-wheel
           path: dist
 
       - name: Create release
