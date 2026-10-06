@@ -55,8 +55,25 @@ jobs:
           git clone --depth 1 --branch "$PICO_SDK_VERSION" https://github.com/raspberrypi/pico-sdk.git pico-sdk
           git -C pico-sdk submodule update --init --depth 1 lib/tinyusb
 
+      # Release builds (tag vX.Y.Z): the firmware version comes from the tag. Other builds keep the CMakeLists default.
+      - name: Version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::tag $GITHUB_REF_NAME is not vX.Y.Z"
+            exit 1
+          fi
+          host=$(sed -n 's/^version = "\(.*\)"$/\1/p' host/pyproject.toml)
+          if [ "$host" != "$version" ]; then
+            echo "::warning::tag $GITHUB_REF_NAME, but host/pyproject.toml says version $host"
+          fi
+          echo "FW_VERSION=$version" >> "$GITHUB_ENV"
+
       - name: Configure
-        run: cmake -S firmware -B build -G Ninja -DPICO_SDK_PATH="$GITHUB_WORKSPACE/pico-sdk" -DPICO_BOARD=pico -DCMAKE_BUILD_TYPE=Release
+        run: |
+          cmake -S firmware -B build -G Ninja -DPICO_SDK_PATH="$GITHUB_WORKSPACE/pico-sdk" -DPICO_BOARD=pico \
+            -DCMAKE_BUILD_TYPE=Release ${FW_VERSION:+-DFW_VERSION="$FW_VERSION"}
 
       - name: Build
         run: cmake --build build --parallel
@@ -95,3 +112,27 @@ jobs:
 
       - name: pytest
         run: .venv/bin/pytest host/tests -q
+
+  # Tag vX.Y.Z: publish a GitHub release with the .uf2, once the firmware build and the host tests have passed.
+  release:
+    name: Release (tag)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [firmware, host]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write  # create the release; only this job gets write access
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: pico-nand-tool-uf2
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cp dist/pico_nand_tool.uf2 "pico_nand_tool-$TAG.uf2"
+          gh release create "$TAG" "pico_nand_tool-$TAG.uf2" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "pico_nand_tool $TAG" --generate-notes

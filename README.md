@@ -64,7 +64,10 @@ The pin map lives in [`firmware/src/pins.h`](firmware/src/pins.h). Change it the
 
 ## Build the firmware
 
-You can download a prebuilt `.uf2` from CI, or build it yourself.
+You can download a prebuilt `.uf2` from a release or from CI, or build it yourself.
+
+**Download a release:** every `vX.Y.Z` tag has a [GitHub release](https://github.com/KamranAghlami/pico_nand_tool/releases)
+with `pico_nand_tool-vX.Y.Z.uf2`, built by CI with the firmware version taken from the tag.
 
 **Download from CI** (needs the [GitHub CLI](https://cli.github.com/)):
 
@@ -247,4 +250,7 @@ make -C firmware/tests check        # firmware unit tests + opcode, write-path a
 .venv/bin/pytest host/tests -q      # host tool against a simulated device (needs host[test])
 ```
 
-CI runs both on every push, builds the `.uf2`, and uploads it as the `pico-nand-tool-uf2` artifact.
+CI runs both on every push, builds the `.uf2`, and uploads it as the `pico-nand-tool-uf2` artifact. Pushing a tag
+`vX.Y.Z` also builds the firmware as version X.Y.Z and, once everything passes, publishes a GitHub release with
+`pico_nand_tool-vX.Y.Z.uf2`. The host tool's version (`host/pyproject.toml`, `nand_tool/__init__.py`) is not taken from
+the tag; bump it by hand (CI warns on a mismatch).

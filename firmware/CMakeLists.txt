@@ -16,9 +16,19 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 pico_sdk_init()
 
-set(FW_VERSION_MAJOR 0)
-set(FW_VERSION_MINOR 2)
-set(FW_VERSION_PATCH 0)
+# Firmware version, reported by PING. Release builds take it from the git tag (CI: tag v1.2.3 -> -DFW_VERSION=1.2.3);
+# local builds use this default. No leading zeros: each part becomes a C integer literal (08 would be octal).
+set(FW_VERSION "0.2.0" CACHE STRING "Firmware version X.Y.Z")
+if(NOT FW_VERSION MATCHES "^(0|[1-9][0-9]?[0-9]?)\\.(0|[1-9][0-9]?[0-9]?)\\.(0|[1-9][0-9]?[0-9]?)$")
+    message(FATAL_ERROR "FW_VERSION '${FW_VERSION}' is not X.Y.Z (each 0..999, no leading zeros)")
+endif()
+set(FW_VERSION_MAJOR ${CMAKE_MATCH_1})
+set(FW_VERSION_MINOR ${CMAKE_MATCH_2})
+set(FW_VERSION_PATCH ${CMAKE_MATCH_3})
+if(FW_VERSION_MAJOR GREATER 255 OR FW_VERSION_MINOR GREATER 255 OR FW_VERSION_PATCH GREATER 255)
+    message(FATAL_ERROR "FW_VERSION '${FW_VERSION}': each part must fit the u8 PING fields (0..255)")
+endif()
+message(STATUS "Firmware version ${FW_VERSION}")
 
 # git description for the PING version string, regenerated on every build (not just at configure time).
 set(GIT_DESC_H ${CMAKE_CURRENT_BINARY_DIR}/generated/git_desc.h)
