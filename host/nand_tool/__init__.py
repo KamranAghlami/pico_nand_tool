@@ -16,4 +16,6 @@ Package map, lowest layer first (docs/LEARNING_GUIDE.md §3, §8):
     cli.py        argparse front end: one cmd_xxx() function per subcommand
 """
 
+# The one place the host version lives (pyproject.toml reads it). Release builds overwrite it from the git tag
+# (CI: tag v1.2.3 -> "1.2.3"); keep the default equal to the latest tag.
 __version__ = "0.2.0"

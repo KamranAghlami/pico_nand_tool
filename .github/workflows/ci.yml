@@ -64,10 +64,6 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME is not vX.Y.Z"
             exit 1
           fi
-          host=$(sed -n 's/^version = "\(.*\)"$/\1/p' host/pyproject.toml)
-          if [ "$host" != "$version" ]; then
-            echo "::warning::tag $GITHUB_REF_NAME, but host/pyproject.toml says version $host"
-          fi
           echo "FW_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Configure
@@ -104,6 +100,19 @@ jobs:
         with:
           python-version: "3.x"  # latest stable CPython
 
+      # Release builds (tag vX.Y.Z): the host version comes from the tag too. nand_tool/__init__.py is its one source
+      # (pyproject.toml reads it), so only that line is rewritten.
+      - name: Version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::tag $GITHUB_REF_NAME is not vX.Y.Z"
+            exit 1
+          fi
+          sed -i "s/^__version__ = \".*\"$/__version__ = \"$version\"/" host/nand_tool/__init__.py
+          grep -qx "__version__ = \"$version\"" host/nand_tool/__init__.py
+
       - name: Install (venv)
         run: |
           python -m venv .venv
@@ -113,7 +122,25 @@ jobs:
       - name: pytest
         run: .venv/bin/pytest host/tests -q
 
-  # Tag vX.Y.Z: publish a GitHub release with the .uf2, once the firmware build and the host tests have passed.
+      - name: Check the installed version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: .venv/bin/nandtool --version | tee /dev/stderr | grep -qF "nandtool ${GITHUB_REF_NAME#v} ("
+
+      # The host tool as a wheel (pure Python, any OS): pip install pico_nand_tool-X.Y.Z-py3-none-any.whl
+      - name: Build wheel
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: .venv/bin/pip wheel --no-deps -w dist ./host
+
+      - name: Upload wheel
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: pico-nand-tool-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # Tag vX.Y.Z: publish a GitHub release with the firmware .uf2 and the host tool wheel, once the firmware build and
+  # the host tests have passed.
   release:
     name: Release (tag)
     if: startsWith(github.ref, 'refs/tags/v')
@@ -128,11 +155,16 @@ jobs:
           name: pico-nand-tool-uf2
           path: dist
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: pico-nand-tool-wheel
+          path: dist
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           cp dist/pico_nand_tool.uf2 "pico_nand_tool-$TAG.uf2"
-          gh release create "$TAG" "pico_nand_tool-$TAG.uf2" --repo "$GITHUB_REPOSITORY" --verify-tag \
+          gh release create "$TAG" "pico_nand_tool-$TAG.uf2" dist/*.whl --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "pico_nand_tool $TAG" --generate-notes

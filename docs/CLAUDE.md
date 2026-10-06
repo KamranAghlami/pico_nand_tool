@@ -107,8 +107,9 @@ python3 -m venv .venv && .venv/bin/pip install -e 'host[test]'
 
 CI (`.github/workflows/ci.yml`) runs `make -C firmware/tests check`, builds the `.uf2` (uploaded as an artifact),
 and runs the host tests on the latest stable Python. A `vX.Y.Z` tag builds the firmware with `-DFW_VERSION=X.Y.Z`
-and publishes a GitHub release with `pico_nand_tool-vX.Y.Z.uf2`. The host version is bumped by hand (CI warns on
-a mismatch); the CMakeLists `FW_VERSION` default should match the latest tag.
+and the host with `__version__ = "X.Y.Z"` (`nand_tool/__init__.py`, the host version's only source), then publishes
+a GitHub release with `pico_nand_tool-vX.Y.Z.uf2` and the host wheel. Keep both defaults (CMakeLists `FW_VERSION`,
+`__version__`) equal to the latest tag.
 
 ## Memory
 

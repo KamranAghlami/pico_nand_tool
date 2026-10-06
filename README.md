@@ -67,7 +67,8 @@ The pin map lives in [`firmware/src/pins.h`](firmware/src/pins.h). Change it the
 You can download a prebuilt `.uf2` from a release or from CI, or build it yourself.
 
 **Download a release:** every `vX.Y.Z` tag has a [GitHub release](https://github.com/KamranAghlami/pico_nand_tool/releases)
-with `pico_nand_tool-vX.Y.Z.uf2`, built by CI with the firmware version taken from the tag.
+with the firmware, `pico_nand_tool-vX.Y.Z.uf2`, and the host tool as a wheel, `pico_nand_tool-X.Y.Z-py3-none-any.whl`
+(see [Install the host tool](#install-the-host-tool)). CI builds both with the version taken from the tag.
 
 **Download from CI** (needs the [GitHub CLI](https://cli.github.com/)):
 
@@ -138,6 +139,9 @@ never into the system Python:
 python3 -m venv .venv
 .venv/bin/pip install -e host            # or -e 'host[test]' to also get pytest
 ```
+
+Or, without the source, install a release's wheel the same way:
+`.venv/bin/pip install pico_nand_tool-X.Y.Z-py3-none-any.whl`.
 
 This installs the `nandtool` command into `.venv/bin/`. Run `source .venv/bin/activate` to call it as just
 `nandtool`.
@@ -251,6 +255,5 @@ make -C firmware/tests check        # firmware unit tests + opcode, write-path a
 ```
 
 CI runs both on every push, builds the `.uf2`, and uploads it as the `pico-nand-tool-uf2` artifact. Pushing a tag
-`vX.Y.Z` also builds the firmware as version X.Y.Z and, once everything passes, publishes a GitHub release with
-`pico_nand_tool-vX.Y.Z.uf2`. The host tool's version (`host/pyproject.toml`, `nand_tool/__init__.py`) is not taken from
-the tag; bump it by hand (CI warns on a mismatch).
+`vX.Y.Z` also builds the firmware and the host tool as version X.Y.Z and, once everything passes, publishes a GitHub
+release with `pico_nand_tool-vX.Y.Z.uf2` and the host wheel.
